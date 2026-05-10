@@ -1,12 +1,13 @@
-"""EigenTruth Core — 防崩溃数学引擎。
+"""EigenTruth Core — 防崩溃数学引擎 / Crash-proof Math Engine.
 
-基于几何动力学的底层数学原语，包括：
-- Sherman-Morrison 在线协方差逆更新
-- 马氏距离计算
-- 庞加莱球模型映射
-- 双曲语义熵 (HSE)
+基于几何动力学的底层数学原语，包括 / Core mathematical primitives based on geometric dynamics, including:
+- Sherman-Morrison 在线协方差逆更新 / Online covariance inverse update via Sherman-Morrison
+- 马氏距离计算 / Mahalanobis distance computation
+- 庞加莱球模型映射 / Poincaré ball model mapping
+- 双曲语义熵 (HSE) / Hyperbolic Semantic Entropy (HSE)
 
 所有浮点密集运算在内部强制使用 FP32 以确保数值稳定性。
+All float-intensive computations are forced to FP32 internally to ensure numerical stability.
 """
 
 from __future__ import annotations
@@ -26,12 +27,13 @@ from torch import Tensor
 @dataclass
 class TruthManifold:
     """真值流形：存储事实语料的统计特征。
+    Truth Manifold: Stores statistical features of the factual corpus.
 
     Attributes:
-        mean: 隐状态质心向量，形状 [hidden_dim].
-        cov_inv: 协方差矩阵的逆，形状 [hidden_dim, hidden_dim].
-        n: 已累积的样本数量.
-        hidden_dim: 隐状态维度 (由首次更新时自动推断).
+        mean: 隐状态质心向量 / Hidden state centroid vector, shape [hidden_dim].
+        cov_inv: 协方差矩阵的逆 / Inverse covariance matrix, shape [hidden_dim, hidden_dim].
+        n: 已累积的样本数量 / Accumulated sample count.
+        hidden_dim: 隐状态维度 (由首次更新时自动推断) / Hidden state dimension (inferred automatically on first update).
     """
 
     mean: Optional[Tensor] = None
@@ -52,12 +54,14 @@ class TruthManifold:
 
     def update(self, h: Tensor, epsilon: float = 1e-6) -> None:
         """用单个隐状态向量增量更新流形。
+        Incrementally update the manifold with a single hidden state vector.
 
         首次调用时自动初始化 mean 和 cov_inv。
+        Automatically initializes mean and cov_inv on first call.
 
         Args:
-            h: 隐状态向量, 形状 [hidden_dim].
-            epsilon: Sherman-Morrison 分母正则项.
+            h: 隐状态向量 / Hidden state vector, shape [hidden_dim].
+            epsilon: Sherman-Morrison 分母正则项 / Denominator regularization term.
         """
         h = h.detach()
 
@@ -133,18 +137,20 @@ def sherman_morrison_update(
     epsilon: float = 1e-6,
 ) -> Tensor:
     """Sherman-Morrison 秩-1 在线更新协方差逆矩阵。
+    Sherman-Morrison rank-1 online update for the inverse covariance matrix.
 
-    公式: A⁻¹_new = A⁻¹ - (A⁻¹ x xᵀ A⁻¹) / (1 + xᵀ A⁻¹ x + ε)
+    公式 / Formula: A⁻¹_new = A⁻¹ - (A⁻¹ x xᵀ A⁻¹) / (1 + xᵀ A⁻¹ x + ε)
 
     内部所有运算强制使用 FP32 以防止 FP16 数值崩溃。
+    All internal computations are forced to FP32 to prevent FP16 numerical collapse.
 
     Args:
-        cov_inv: 当前协方差逆矩阵, 形状 [d, d].
-        x: 增量向量 (h - mean), 形状 [d].
-        epsilon: 分母正则项, 防止除零.
+        cov_inv: 当前协方差逆矩阵 / Current inverse covariance matrix, shape [d, d].
+        x: 增量向量 / Incremental vector (h - mean), shape [d].
+        epsilon: 分母正则项, 防止除零 / Denominator regularization term to prevent division by zero.
 
     Returns:
-        更新后的协方差逆矩阵, 形状 [d, d], 与输入同精度.
+        更新后的协方差逆矩阵 / Updated inverse covariance matrix, shape [d, d], with the same dtype as input.
     """
     orig_dtype = cov_inv.dtype
 
@@ -165,16 +171,17 @@ def mahalanobis_distance(
     cov_inv: Tensor,
 ) -> Tensor:
     """计算隐状态到真值质心的马氏距离。
+    Compute the Mahalanobis distance from a hidden state to the truth centroid.
 
     D_M(h) = sqrt( (h - μ)ᵀ Σ⁻¹ (h - μ) )
 
     Args:
-        h: 隐状态向量, 形状 [..., hidden_dim].
-        mean: 质心向量, 形状 [hidden_dim].
-        cov_inv: 协方差逆矩阵, 形状 [hidden_dim, hidden_dim].
+        h: 隐状态向量 / Hidden state vector, shape [..., hidden_dim].
+        mean: 质心向量 / Centroid vector, shape [hidden_dim].
+        cov_inv: 协方差逆矩阵 / Inverse covariance matrix, shape [hidden_dim, hidden_dim].
 
     Returns:
-        马氏距离张量, 形状与 h 的批次维度一致 (>=0).
+        马氏距离张量 / Mahalanobis distance tensor, shape matching batch dimension of h (>=0).
     """
     # 强制 FP32
     delta = (h - mean).to(torch.float32)
@@ -192,17 +199,18 @@ def poincare_map(
     max_norm: float = 0.999,
 ) -> Tensor:
     """将欧氏空间隐状态映射到庞加莱球模型。
+    Map Euclidean space hidden states to the Poincaré ball model.
 
-    使用指数映射 (exponential map at origin):
+    使用指数映射 / Using exponential map at origin:
         exp_0(v) = tanh(√c ‖v‖ / 2) · v / (√c ‖v‖)
 
     Args:
-        h_euclidean: 欧氏空间向量, 形状 [..., dim].
-        curvature: 负曲率参数 c (正值).
-        max_norm: 钳位最大范数, 保持在开球内部 (< 1).
+        h_euclidean: 欧氏空间向量 / Euclidean space vector, shape [..., dim].
+        curvature: 负曲率参数 c (正值) / Negative curvature parameter c (positive value).
+        max_norm: 钳位最大范数, 保持在开球内部 / Clamp maximum norm to stay inside the open ball (< 1).
 
     Returns:
-        庞加莱球坐标, 形状 [..., dim], 范数 < 1.
+        庞加莱球坐标 / Poincaré ball coordinates, shape [..., dim], norm < 1.
     """
     h = h_euclidean.to(torch.float32)
     sqrt_c = curvature ** 0.5
@@ -257,18 +265,19 @@ def hyperbolic_semantic_entropy(
     curvature: float = 1.0,
 ) -> Tensor:
     """计算庞加莱球上一组点的双曲语义熵 (HSE)。
+    Compute the Hyperbolic Semantic Entropy (HSE) for a set of points on the Poincaré ball.
 
-    HSE 衡量一组语义表征在双曲空间中的分散程度：
+    HSE 衡量一组语义表征在双曲空间中的分散程度 / HSE measures the dispersion of semantic representations in hyperbolic space:
         HSE = mean( d_hyp(p_i, centroid) )
 
-    其中 centroid 使用爱因斯坦中点的简化近似（欧氏均值后投影）。
+    其中 centroid 使用爱因斯坦中点的简化近似 / centroid uses a simplified approximation of the Einstein midpoint (Euclidean mean followed by projection).
 
     Args:
-        points_poincare: 庞加莱球上的点集, 形状 [W, D] 或 [W, B, D]. W是窗口大小.
-        curvature: 曲率参数 c.
+        points_poincare: 庞加莱球上的点集 / Points on the Poincaré ball, shape [W, D] or [W, B, D], where W is window size.
+        curvature: 曲率参数 c / Curvature parameter c.
 
     Returns:
-        HSE 值 (>=0). 如果输入有 Batch 维，则返回 [B], 否则返回标量.
+        HSE 值 / HSE value (>=0). 如果输入有 Batch 维，则返回 [B], 否则返回标量 / Returns [B] if input has Batch dim, otherwise scalar.
     """
     if points_poincare.shape[0] <= 1:
         # 如果是 [1, B, D]

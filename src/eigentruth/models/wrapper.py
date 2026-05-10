@@ -1,11 +1,12 @@
-"""EigenTruth Models — HuggingFace 顶层封装器。
+"""EigenTruth Models — HuggingFace 顶层封装器 / HuggingFace Top-level Wrapper.
 
-提供 EigenTruthWrapper，实现：
-- warmup(): 真值流形冷启动
-- generate(): 受控文本生成（自带幻觉监测与实时纠偏）
-- forward(): 透传给原始模型
+提供 EigenTruthWrapper，实现 / Provides EigenTruthWrapper, implementing:
+- warmup(): 真值流形冷启动 / Truth manifold cold start
+- generate(): 受控文本生成（自带幻觉监测与实时纠偏） / Controlled text generation (with built-in hallucination monitoring and real-time correction)
+- forward(): 透传给原始模型 / Passthrough to the original model
 
 非侵入式设计：不修改原始模型参数，通过 hook 实现所有干预。
+Non-intrusive design: Does not modify original model parameters, implements all interventions via hooks.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ if not logger.handlers:
 
 class EigenTruthWrapper(nn.Module):
     """EigenTruth 主封装器：为 HuggingFace CausalLM 模型穿戴幻觉治理装甲。
+    EigenTruth Main Wrapper: Equips HuggingFace CausalLM models with hallucination governance armor.
 
     用法示例::
 
@@ -51,12 +53,13 @@ class EigenTruthWrapper(nn.Module):
         outputs = safe_model.generate(**inputs, max_new_tokens=100)
 
     Args:
-        model: HuggingFace CausalLM 模型实例.
-        target_layer_idx: 挂载探针的 Transformer 层索引（支持负索引）.
-        steering_lambda: 激活引导强度 (0 = 纯监测, 不干预).
-        mahalanobis_threshold: 马氏距离阈值，超出时触发引导与预警.
-        hse_warning_threshold: HSE 预警阈值.
-        curvature: 庞加莱球曲率参数.
+        model: HuggingFace CausalLM 模型实例 / HuggingFace CausalLM model instance.
+        target_layer_idx: 挂载探针的 Transformer 层索引（支持负索引） / Transformer layer index to mount the probe (supports negative indexing).
+        steering_lambda: 激活引导强度 (0 = 纯监测, 不干预) / Activation steering strength (0 = monitor only, no intervention).
+        mahalanobis_threshold: 马氏距离阈值，超出时触发引导与预警 / Mahalanobis distance threshold, triggers steering and warnings when exceeded.
+        hse_warning_threshold: HSE 预警阈值 / HSE warning threshold.
+        curvature: 庞加莱球曲率参数 / Poincaré ball curvature parameter.
+        hse_window_size: HSE 滑动窗口大小 / HSE sliding window size.
     """
 
     def __init__(
@@ -98,16 +101,19 @@ class EigenTruthWrapper(nn.Module):
         batch_size: int = 1,
     ) -> None:
         """使用事实语料构建真值流形。
+        Build the truth manifold using a factual corpus.
 
         提取目标层的隐状态，增量构建 TruthManifold。
         如果提供了 false_dataset，将额外构建对比方向。
+        Extracts hidden states from the target layer to incrementally build the TruthManifold.
+        If false_dataset is provided, it will additionally construct a contrastive direction.
 
         Args:
-            fact_dataset: 绝对正确的事实文本列表.
+            fact_dataset: 绝对正确的事实文本列表 / List of absolutely correct factual texts.
             tokenizer: HuggingFace tokenizer.
-            false_dataset: 绝对错误的对应文本列表 (用于构建对比方向).
-            max_length: tokenize 最大长度.
-            batch_size: 暂时为 1（MVP）.
+            false_dataset: 绝对错误的对应文本列表 (用于构建对比方向) / List of corresponding completely false texts (used to build contrastive direction).
+            max_length: tokenize 最大长度 / max length for tokenization.
+            batch_size: 暂时为 1（MVP） / Currently 1 (MVP).
         """
         self.manifold = TruthManifold()
         device = self._get_device()
@@ -184,22 +190,28 @@ class EigenTruthWrapper(nn.Module):
 
     def generate(self, **kwargs: Any) -> Any:
         """受控文本生成。
+        Controlled text generation.
 
         透传参数给原始 model.generate()，在生成过程中
         TruthProbe hook 自动工作，实时监测并干预幻觉。
+        Passes parameters through to the original model.generate(). During generation,
+        the TruthProbe hook automatically operates, monitoring and intervening in real-time.
 
         生成完成后检查 HSE，如超阈值则输出预警。
+        After generation, checks HSE and outputs a warning if the threshold is exceeded.
 
         Args:
-            **kwargs: 传递给 model.generate() 的所有参数.
+            **kwargs: 传递给 model.generate() 的所有参数 / All parameters passed to model.generate().
 
         Returns:
-            model.generate() 的原始返回值.
+            model.generate() 的原始返回值 / Original return value of model.generate().
         """
         if not self._is_warmed_up:
             logger.warning(
                 "⚠️ 模型未经 warmup，将以无防护模式生成。"
-                "请先调用 safe_model.warmup(fact_dataset, tokenizer)。"
+                "请先调用 safe_model.warmup(fact_dataset, tokenizer)。\n"
+                "⚠️ Model not warmed up, generating in unprotected mode. "
+                "Please call safe_model.warmup(fact_dataset, tokenizer) first."
             )
             return self.model.generate(**kwargs)
 
@@ -282,7 +294,10 @@ class EigenTruthWrapper(nn.Module):
             logger.warning(
                 f"⚠️ 检测到深层语义发散 (HSE={self.probe.last_hse:.2f} > "
                 f"阈值 {self.hse_warning_threshold:.2f})，"
-                f"系统可能正在产生幻觉！"
+                f"系统可能正在产生幻觉！\n"
+                f"⚠️ Deep semantic divergence detected (HSE={self.probe.last_hse:.2f} > "
+                f"Threshold {self.hse_warning_threshold:.2f}). "
+                f"The system might be hallucinating!"
             )
 
     def _get_device(self) -> torch.device:
@@ -302,7 +317,7 @@ class EigenTruthWrapper(nn.Module):
             self.probe.remove()
             self.probe = None
         self._is_warmed_up = False
-        logger.info("🔓 EigenTruth 探针已移除，模型恢复原始状态。")
+        logger.info("🔓 EigenTruth 探针已移除，模型恢复原始状态。 / EigenTruth probe removed, model restored to original state.")
 
     def __del__(self) -> None:
         """析构时确保 hook 被移除。"""
