@@ -132,7 +132,8 @@ class TestHookFunctionality:
         probe = TruthProbe(manifold, threshold=1000.0)  # 高阈值，不触发引导
         probe.register(model, layer_idx=-1)
 
-        x = torch.randn(1, 5, 32)  # [B=1, Seq=5, D=32]
+        # 批大小 B=3
+        x = torch.randn(3, 5, 32)  # [B=3, Seq=5, D=32]
         with torch.no_grad():
             _ = model(x)
 
@@ -158,28 +159,33 @@ class TestHookFunctionality:
         probe.remove()
 
     def test_steering_modifies_output_when_above_threshold(self):
-        """当距离超阈值时，输出被引导修改。"""
+        """当距离超阈值时，输出被引导修改。仅修改超出阈值的 batch。"""
         model = MockModel(n_layers=4, hidden_dim=32)
         manifold = _build_manifold(32)
 
-        x = torch.randn(1, 5, 32)
+        x = torch.randn(2, 5, 32) # B=2
 
-        # 无引导
-        probe_off = TruthProbe(manifold, threshold=1e10, steering_lambda=0.0)
-        probe_off.register(model, layer_idx=-1)
-        with torch.no_grad():
-            out_off = model(x).clone()
-        probe_off.remove()
+        # 调整 x 使得其中一个样本距离极小（不过阈值），另一个极大（过阈值）
+        # 流形在原点附近
+        x[0] = x[0] * 0.001  # 很近，距离低
+        x[1] = x[1] * 1000.0 # 很远，距离高
 
-        # 有引导（极低阈值，必然触发）
-        probe_on = TruthProbe(manifold, threshold=0.0, steering_lambda=1.0)
+        # 阈值设为 100，只会拦截 x[1]
+        probe_on = TruthProbe(manifold, threshold=100.0, steering_lambda=1.0)
         probe_on.register(model, layer_idx=-1)
+        
         with torch.no_grad():
             out_on = model(x).clone()
-        probe_on.remove()
+            probe_on.remove()
+            
+            # 再不带 probe 跑一遍
+            out_off = model(x).clone()
 
-        # 最后一个 token 的输出应不同
-        assert not torch.allclose(out_off[:, -1, :], out_on[:, -1, :])
+        # 最后一个 token 的输出
+        # x[0] 低于阈值，不应被修改
+        assert torch.allclose(out_off[0, -1, :], out_on[0, -1, :], atol=1e-5)
+        # x[1] 高于阈值，应被修改
+        assert not torch.allclose(out_off[1, -1, :], out_on[1, -1, :])
 
     def test_no_modification_below_threshold(self):
         """当距离低于阈值时，输出不变。"""
@@ -257,20 +263,22 @@ class TestOutputFormatHandling:
 class TestHSETracking:
     """双曲语义熵历史追踪测试。"""
 
-    def test_hse_accumulates(self):
-        """多次前向传播后 HSE 被计算。"""
+    def test_hse_accumulates_and_truncates(self):
+        """多次前向传播后 HSE 被计算，且不超出 hse_window_size。"""
         model = MockModel(n_layers=4, hidden_dim=32)
         manifold = _build_manifold(32)
-        probe = TruthProbe(manifold, threshold=1e10)
+        probe = TruthProbe(manifold, threshold=1e10, hse_window_size=3)
         probe.register(model, layer_idx=-1)
 
         for _ in range(5):
-            x = torch.randn(1, 3, 32)
+            x = torch.randn(2, 3, 32) # B=2
             with torch.no_grad():
                 _ = model(x)
 
         assert probe.last_hse > 0.0
-        assert len(probe._poincare_history) == 5
+        # 虽然调用了 5 次，但最大长度应截断为 3
+        assert len(probe._poincare_history) == 3
+        assert probe._poincare_history[0].shape == (2, 32)
         probe.remove()
 
     def test_reset_history_clears(self):
@@ -299,29 +307,43 @@ class TestSteeringVector:
     """引导向量计算测试。"""
 
     def test_direction_toward_mean(self):
-        """引导方向指向质心。"""
+        """无 false_mean 时引导方向指向质心。"""
         manifold = _build_manifold(32)
         probe = TruthProbe(manifold)
 
-        h = torch.randn(32)
-        steering = probe._compute_steering_vector(h)
+        h = torch.randn(2, 32) # [B=2, D]
+        steering = probe._compute_steering_vector(h) # [B, D]
 
         # steering 应与 (mean - h) 同向
         expected_dir = manifold.mean - h.to(torch.float32)
-        expected_dir = expected_dir / torch.norm(expected_dir)
+        expected_dir = expected_dir / torch.norm(expected_dir, dim=-1, keepdim=True)
 
-        cos_sim = torch.dot(steering.to(torch.float32), expected_dir)
-        assert cos_sim > 0.99  # 近乎同向
+        cos_sim = torch.sum(steering.to(torch.float32) * expected_dir, dim=-1)
+        assert torch.all(cos_sim > 0.99)  # 近乎同向
+
+    def test_contrastive_direction(self):
+        """有 contrastive_direction 时直接使用。"""
+        manifold = _build_manifold(32)
+        manifold.contrastive_direction = torch.ones(32) # [D]
+        probe = TruthProbe(manifold)
+
+        h = torch.randn(2, 32)
+        steering = probe._compute_steering_vector(h)
+
+        expected_dir = torch.ones(32) / torch.norm(torch.ones(32))
+        
+        cos_sim = torch.sum(steering.to(torch.float32) * expected_dir.unsqueeze(0), dim=-1)
+        assert torch.all(cos_sim > 0.99)
 
     def test_steering_is_unit_vector(self):
         """引导向量是单位向量。"""
         manifold = _build_manifold(32)
         probe = TruthProbe(manifold)
 
-        h = torch.randn(32)
+        h = torch.randn(2, 32)
         steering = probe._compute_steering_vector(h)
-        norm = torch.norm(steering)
-        assert torch.isclose(norm, torch.tensor(1.0), atol=1e-4)
+        norm = torch.norm(steering, dim=-1)
+        assert torch.allclose(norm, torch.ones_like(norm), atol=1e-4)
 
 
 # ===================================================================

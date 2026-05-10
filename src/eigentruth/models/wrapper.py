@@ -67,6 +67,7 @@ class EigenTruthWrapper(nn.Module):
         mahalanobis_threshold: float = 15.0,
         hse_warning_threshold: float = 5.0,
         curvature: float = 1.0,
+        hse_window_size: int = 20,
     ) -> None:
         super().__init__()
 
@@ -76,6 +77,7 @@ class EigenTruthWrapper(nn.Module):
         self.mahalanobis_threshold = mahalanobis_threshold
         self.hse_warning_threshold = hse_warning_threshold
         self.curvature = curvature
+        self.hse_window_size = hse_window_size
 
         # 内部状态
         self.manifold = TruthManifold()
@@ -91,68 +93,75 @@ class EigenTruthWrapper(nn.Module):
         self,
         fact_dataset: List[str],
         tokenizer: Any,
+        false_dataset: Optional[List[str]] = None,
         max_length: int = 128,
         batch_size: int = 1,
     ) -> None:
         """使用事实语料构建真值流形。
 
-        遍历 fact_dataset 中的每条事实文本，通过模型前向传播
         提取目标层的隐状态，增量构建 TruthManifold。
+        如果提供了 false_dataset，将额外构建对比方向。
 
         Args:
             fact_dataset: 绝对正确的事实文本列表.
             tokenizer: HuggingFace tokenizer.
+            false_dataset: 绝对错误的对应文本列表 (用于构建对比方向).
             max_length: tokenize 最大长度.
             batch_size: 暂时为 1（MVP）.
         """
         self.manifold = TruthManifold()
         device = self._get_device()
 
-        # 临时 hook 用于收集隐状态
-        collected_states: List[Tensor] = []
+        def _collect_states(dataset: List[str]) -> List[Tensor]:
+            collected: List[Tensor] = []
+            
+            def _collect_hook(module: nn.Module, input: Any, output: Any) -> None:
+                hidden = output[0] if isinstance(output, tuple) else output
+                # 提取最后一个 token 的表征以捕捉因果结论
+                h_last = hidden.detach()[:, -1, :].squeeze(0)  # [D]
+                collected.append(h_last.cpu())
 
-        def _collect_hook(module: nn.Module, input: Any, output: Any) -> None:
-            """临时 hook：收集隐状态并更新流形。"""
-            hidden = output[0] if isinstance(output, tuple) else output
-            # 取所有 token 的均值作为该句的表征
-            h_mean = hidden.detach().mean(dim=1).squeeze(0)  # [D]
-            collected_states.append(h_mean.cpu())
+            layers = TruthProbe._find_layers(self.model)
+            target_layer = layers[self.target_layer_idx]
+            hook_handle = target_layer.register_forward_hook(_collect_hook)
 
-        # 定位目标层并注册临时 hook
-        layers = TruthProbe._find_layers(self.model)
-        target_layer = layers[self.target_layer_idx]
-        hook_handle = target_layer.register_forward_hook(_collect_hook)
+            try:
+                for i, text in enumerate(dataset):
+                    inputs = tokenizer(
+                        text, return_tensors="pt", max_length=max_length,
+                        truncation=True, padding=True
+                    ).to(device)
+                    
+                    if isinstance(inputs, dict):
+                        self.model(**inputs)
+                    elif hasattr(inputs, "input_ids"):
+                        self.model(
+                            input_ids=inputs.input_ids,
+                            attention_mask=getattr(inputs, "attention_mask", None),
+                        )
+                    else:
+                        self.model(**dict(inputs))
+            finally:
+                hook_handle.remove()
+                
+            return collected
 
-        try:
-            for i, text in enumerate(fact_dataset):
-                inputs = tokenizer(
-                    text,
-                    return_tensors="pt",
-                    max_length=max_length,
-                    truncation=True,
-                    padding=True,
-                )
-                # .to(device) 返回的可能是 BatchEncoding 或 dict
-                inputs = inputs.to(device)
-
-                # 兼容 dict 和 BatchEncoding：提取 input_ids
-                if isinstance(inputs, dict):
-                    self.model(**inputs)
-                elif hasattr(inputs, "input_ids"):
-                    self.model(
-                        input_ids=inputs.input_ids,
-                        attention_mask=getattr(inputs, "attention_mask", None),
-                    )
-                else:
-                    self.model(**dict(inputs))
-
-                logger.debug(f"Warmup: processed {i + 1}/{len(fact_dataset)}")
-        finally:
-            hook_handle.remove()
+        logger.info("Collecting true representations...")
+        fact_states = _collect_states(fact_dataset)
 
         # 用收集到的隐状态构建流形
-        for h in collected_states:
+        for h in fact_states:
             self.manifold.update(h)
+
+        if false_dataset is not None:
+            logger.info("Collecting false representations for contrastive direction...")
+            false_states = _collect_states(false_dataset)
+            if len(false_states) > 0:
+                false_mean = torch.stack(false_states).mean(dim=0)
+                self.manifold.false_mean = false_mean.to(torch.float32)
+                # 构建 Truth Direction = True Mean - False Mean
+                self.manifold.contrastive_direction = self.manifold.mean - self.manifold.false_mean
+                logger.info("Contrastive direction successfully established.")
 
         if not self.manifold.is_ready():
             logger.warning(
@@ -260,6 +269,7 @@ class EigenTruthWrapper(nn.Module):
             manifold=self.manifold,
             steering_lambda=self.steering_lambda,
             threshold=self.mahalanobis_threshold,
+            hse_window_size=self.hse_window_size,
         )
         self.probe.register(self.model, self.target_layer_idx)
 

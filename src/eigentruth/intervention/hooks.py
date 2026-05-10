@@ -12,7 +12,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional, Tuple, Union
+from collections import deque
+from typing import Any, Deque, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -46,18 +47,20 @@ class TruthProbe:
         manifold: TruthManifold,
         steering_lambda: float = 0.1,
         threshold: float = 15.0,
+        hse_window_size: int = 20,
     ) -> None:
         self.manifold = manifold
         self.steering_lambda = steering_lambda
         self.threshold = threshold
+        self.hse_window_size = hse_window_size
 
-        # 运行时状态
+        # 运行时状态 (取 Batch 最大值供快速查询)
         self.last_distance: float = 0.0
         self.last_hse: float = 0.0
         self.is_active: bool = False
 
-        # HSE 追踪：收集生成过程中的庞加莱点
-        self._poincare_history: List[Tensor] = []
+        # HSE 追踪：收集生成过程中的庞加莱点 [W, B, D]
+        self._poincare_history: Deque[Tensor] = deque(maxlen=hse_window_size)
 
         # hook 句柄
         self._hook_handle: Optional[torch.utils.hooks.RemovableHook] = None
@@ -134,30 +137,33 @@ class TruthProbe:
             h_last = hidden[:, -1:, :].detach()  # [B, 1, D]
             h_vec = h_last.squeeze(1)              # [B, D]
 
-            # 取 batch 中第一个样本计算距离（生成时通常 B=1）
-            h_single = h_vec[0]  # [D]
-
-            # 马氏距离
+            # 批量计算马氏距离 [B]
             dist = mahalanobis_distance(
-                h_single, self.manifold.mean, self.manifold.cov_inv
+                h_vec, self.manifold.mean, self.manifold.cov_inv
             )
-            self.last_distance = dist.item()
+            # 保存最大距离用于预警诊断
+            self.last_distance = dist.max().item()
 
             # 庞加莱映射 + HSE 追踪
-            h_poincare = poincare_map(h_single.unsqueeze(0)).squeeze(0)
+            h_poincare = poincare_map(h_vec) # [B, D]
             self._poincare_history.append(h_poincare.cpu())
 
             if len(self._poincare_history) >= 2:
-                pts = torch.stack(self._poincare_history)
-                self.last_hse = hyperbolic_semantic_entropy(pts).item()
+                pts = torch.stack(list(self._poincare_history)) # [W, B, D]
+                hse_batch = hyperbolic_semantic_entropy(pts) # [B]
+                self.last_hse = hse_batch.max().item()
 
             # 引导干预
-            if self.last_distance > self.threshold and self.steering_lambda > 0:
-                steering = self._compute_steering_vector(h_single)  # [D]
+            mask = dist > self.threshold # [B]
+            if mask.any() and self.steering_lambda > 0:
+                steering = self._compute_steering_vector(h_vec)  # [B, D]
                 # 注入：只修改最后一个 token 的激活
-                correction = self.steering_lambda * steering  # [D]
+                correction = self.steering_lambda * steering  # [B, D]
+                # 将无需干预的批次修正量清零
+                correction = correction * mask.unsqueeze(1).to(correction.dtype)
+                
                 hidden = hidden.clone()  # 避免原地修改影响计算图
-                hidden[:, -1:, :] = hidden[:, -1:, :] + correction.unsqueeze(0).unsqueeze(0)
+                hidden[:, -1:, :] = hidden[:, -1:, :] + correction.unsqueeze(1)
 
         return self._repack_output(hidden, is_tuple, rest)
 
@@ -168,19 +174,22 @@ class TruthProbe:
     def _compute_steering_vector(self, h: Tensor) -> Tensor:
         """计算从当前激活到真值质心的归一化引导方向。
 
-        steering = normalize(mean - h) * ‖h - mean‖
-
-        即方向朝向质心，强度与偏离程度成正比。
+        如果有对比方向，则沿对比方向；否则方向朝向真值质心。
 
         Args:
-            h: 当前隐状态, 形状 [D].
+            h: 当前隐状态, 形状 [B, D].
 
         Returns:
-            引导向量, 形状 [D].
+            引导向量, 形状 [B, D].
         """
-        mean = self.manifold.mean.to(h.device)
-        direction = mean.to(torch.float32) - h.to(torch.float32)
-        norm = torch.norm(direction).clamp(min=1e-8)
+        if self.manifold.contrastive_direction is not None:
+            direction = self.manifold.contrastive_direction.to(h.device)
+            direction = direction.unsqueeze(0).expand_as(h)
+        else:
+            mean = self.manifold.mean.to(h.device)
+            direction = mean.to(torch.float32) - h.to(torch.float32)
+            
+        norm = torch.norm(direction, dim=-1, keepdim=True).clamp(min=1e-8)
         return (direction / norm).to(h.dtype)
 
     # ------------------------------------------------------------------

@@ -159,6 +159,22 @@ class TestWarmup:
             wrapper.warmup(["唯一事实"], tokenizer)
             mock_logger.warning.assert_called()
 
+    def test_warmup_with_false_dataset_computes_contrastive_direction(self):
+        model = MockCausalLM(n_layers=4, hidden_dim=32)
+        wrapper = EigenTruthWrapper(model, target_layer_idx=-1)
+        tokenizer = MockTokenizer()
+
+        wrapper.warmup(
+            fact_dataset=["事实一", "事实二", "事实三"],
+            tokenizer=tokenizer,
+            false_dataset=["错误一", "错误二"]
+        )
+
+        assert wrapper.manifold.false_mean is not None
+        assert wrapper.manifold.contrastive_direction is not None
+        assert wrapper.manifold.false_mean.shape == (32,)
+        assert wrapper.manifold.contrastive_direction.shape == (32,)
+
 
 # ===================================================================
 # Generate 测试

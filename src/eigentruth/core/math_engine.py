@@ -38,6 +38,10 @@ class TruthManifold:
     cov_inv: Optional[Tensor] = None
     n: int = 0
     hidden_dim: int = 0
+    
+    # 扩展：支持方案 B (对比流形)
+    false_mean: Optional[Tensor] = None
+    contrastive_direction: Optional[Tensor] = None
 
     # 运行时设备跟踪（不参与序列化）
     _device: torch.device = field(default_factory=lambda: torch.device("cpu"), repr=False)
@@ -91,6 +95,8 @@ class TruthManifold:
             "cov_inv": self.cov_inv,
             "n": self.n,
             "hidden_dim": self.hidden_dim,
+            "false_mean": self.false_mean,
+            "contrastive_direction": self.contrastive_direction,
         }
         torch.save(state, path)
 
@@ -110,6 +116,8 @@ class TruthManifold:
         manifold.cov_inv = state["cov_inv"]
         manifold.n = state["n"]
         manifold.hidden_dim = state["hidden_dim"]
+        manifold.false_mean = state.get("false_mean", None)
+        manifold.contrastive_direction = state.get("contrastive_direction", None)
         if manifold.mean is not None:
             manifold._device = manifold.mean.device
         return manifold
@@ -161,19 +169,19 @@ def mahalanobis_distance(
     D_M(h) = sqrt( (h - μ)ᵀ Σ⁻¹ (h - μ) )
 
     Args:
-        h: 隐状态向量, 形状 [hidden_dim].
+        h: 隐状态向量, 形状 [..., hidden_dim].
         mean: 质心向量, 形状 [hidden_dim].
         cov_inv: 协方差逆矩阵, 形状 [hidden_dim, hidden_dim].
 
     Returns:
-        马氏距离标量 (>=0).
+        马氏距离张量, 形状与 h 的批次维度一致 (>=0).
     """
     # 强制 FP32
     delta = (h - mean).to(torch.float32)
     cov_inv_f32 = cov_inv.to(torch.float32)
 
-    # δᵀ Σ⁻¹ δ
-    m_sq = delta @ cov_inv_f32 @ delta
+    # δᵀ Σ⁻¹ δ 批量化计算
+    m_sq = (delta @ cov_inv_f32 * delta).sum(dim=-1)
     # clamp 防止浮点误差导致 sqrt 负数
     return torch.sqrt(torch.clamp(m_sq, min=0.0))
 
@@ -223,16 +231,16 @@ def _poincare_distance(u: Tensor, v: Tensor, curvature: float = 1.0) -> Tensor:
         d(u, v) = (1/√c) · arccosh(1 + 2c · ‖u-v‖² / ((1-c‖u‖²)(1-c‖v‖²)))
 
     Args:
-        u, v: 庞加莱球上的点, 形状 [dim].
+        u, v: 庞加莱球上的点, 形状 [..., dim].
         curvature: 曲率参数 c.
 
     Returns:
-        测地线距离标量.
+        测地线距离标量或张量.
     """
     c = curvature
-    diff_sq = torch.sum((u - v) ** 2)
-    u_sq = torch.sum(u ** 2)
-    v_sq = torch.sum(v ** 2)
+    diff_sq = torch.sum((u - v) ** 2, dim=-1)
+    u_sq = torch.sum(u ** 2, dim=-1)
+    v_sq = torch.sum(v ** 2, dim=-1)
 
     denom = (1.0 - c * u_sq) * (1.0 - c * v_sq)
     denom = denom.clamp(min=1e-8)
@@ -256,24 +264,30 @@ def hyperbolic_semantic_entropy(
     其中 centroid 使用爱因斯坦中点的简化近似（欧氏均值后投影）。
 
     Args:
-        points_poincare: 庞加莱球上的点集, 形状 [N, dim].
+        points_poincare: 庞加莱球上的点集, 形状 [W, D] 或 [W, B, D]. W是窗口大小.
         curvature: 曲率参数 c.
 
     Returns:
-        HSE 标量值 (>=0). 点越分散, HSE 越高.
+        HSE 值 (>=0). 如果输入有 Batch 维，则返回 [B], 否则返回标量.
     """
     if points_poincare.shape[0] <= 1:
+        # 如果是 [1, B, D]
+        if points_poincare.ndim == 3:
+            return torch.zeros(points_poincare.shape[1], device=points_poincare.device, dtype=torch.float32)
         return torch.tensor(0.0, device=points_poincare.device, dtype=torch.float32)
 
     points = points_poincare.to(torch.float32)
 
     # 简化中心点: 欧氏均值 → 投影回庞加莱球
-    centroid_euclidean = points.mean(dim=0)
-    centroid = poincare_map(centroid_euclidean.unsqueeze(0), curvature).squeeze(0)
+    centroid_euclidean = points.mean(dim=0) # [B, D] or [D]
+    
+    # 增加假维度用于 poincare_map（原函数支持任意批次维度，直接传入即可）
+    centroid = poincare_map(centroid_euclidean, curvature) # [B, D] or [D]
 
-    # 计算每个点到中心点的测地线距离
-    distances = torch.stack([
-        _poincare_distance(p, centroid, curvature) for p in points
-    ])
+    # 将 centroid 扩展出 W 维度: [1, B, D] or [1, D]
+    centroid_expanded = centroid.unsqueeze(0)
+    
+    # 批量计算测地线距离: _poincare_distance 支持广播
+    distances = _poincare_distance(points, centroid_expanded, curvature) # [W, B] or [W]
 
-    return distances.mean()
+    return distances.mean(dim=0)
