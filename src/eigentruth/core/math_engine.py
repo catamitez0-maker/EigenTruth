@@ -19,7 +19,6 @@ from typing import Optional, Union
 import torch
 from torch import Tensor
 
-
 # ---------------------------------------------------------------------------
 # 数据结构
 # ---------------------------------------------------------------------------
@@ -40,7 +39,7 @@ class TruthManifold:
     cov_inv: Optional[Tensor] = None
     n: int = 0
     hidden_dim: int = 0
-    
+
     # 扩展：支持方案 B (对比流形)
     false_mean: Optional[Tensor] = None
     contrastive_direction: Optional[Tensor] = None
@@ -77,11 +76,11 @@ class TruthManifold:
             return
 
         self.n += 1
-        # 增量均值更新 (Welford)
+        # 增量协方差逆更新（必须在均值更新前计算 delta）
+        # Compute delta BEFORE updating the mean (critical for correct covariance estimation)
+        old_mean = self.mean.clone()
         self.mean = self.mean + (h.to(torch.float32) - self.mean) / self.n
-
-        # 增量协方差逆更新
-        delta = h.to(torch.float32) - self.mean
+        delta = h.to(torch.float32) - old_mean
         self.cov_inv = sherman_morrison_update(self.cov_inv, delta, epsilon)
 
     def is_ready(self) -> bool:
@@ -267,17 +266,23 @@ def hyperbolic_semantic_entropy(
     """计算庞加莱球上一组点的双曲语义熵 (HSE)。
     Compute the Hyperbolic Semantic Entropy (HSE) for a set of points on the Poincaré ball.
 
-    HSE 衡量一组语义表征在双曲空间中的分散程度 / HSE measures the dispersion of semantic representations in hyperbolic space:
+    HSE 衡量一组语义表征在双曲空间中的分散程度
+    HSE measures the dispersion of semantic representations
+    in hyperbolic space:
         HSE = mean( d_hyp(p_i, centroid) )
 
-    其中 centroid 使用爱因斯坦中点的简化近似 / centroid uses a simplified approximation of the Einstein midpoint (Euclidean mean followed by projection).
+    其中 centroid 使用爱因斯坦中点的简化近似
+    centroid uses a simplified approximation of the Einstein midpoint
+    (Euclidean mean followed by projection).
 
     Args:
-        points_poincare: 庞加莱球上的点集 / Points on the Poincaré ball, shape [W, D] or [W, B, D], where W is window size.
+        points_poincare: 庞加莱球上的点集, shape [W, D] or [W, B, D]
+            Points on the Poincaré ball, W is window size.
         curvature: 曲率参数 c / Curvature parameter c.
 
     Returns:
-        HSE 值 / HSE value (>=0). 如果输入有 Batch 维，则返回 [B], 否则返回标量 / Returns [B] if input has Batch dim, otherwise scalar.
+        HSE 值 (>=0)。有 Batch 维则返回 [B]，否则返回标量。
+        Returns [B] if input has Batch dim, otherwise scalar.
     """
     if points_poincare.shape[0] <= 1:
         # 如果是 [1, B, D]
@@ -289,13 +294,13 @@ def hyperbolic_semantic_entropy(
 
     # 简化中心点: 欧氏均值 → 投影回庞加莱球
     centroid_euclidean = points.mean(dim=0) # [B, D] or [D]
-    
+
     # 增加假维度用于 poincare_map（原函数支持任意批次维度，直接传入即可）
     centroid = poincare_map(centroid_euclidean, curvature) # [B, D] or [D]
 
     # 将 centroid 扩展出 W 维度: [1, B, D] or [1, D]
     centroid_expanded = centroid.unsqueeze(0)
-    
+
     # 批量计算测地线距离: _poincare_distance 支持广播
     distances = _poincare_distance(points, centroid_expanded, curvature) # [W, B] or [W]
 

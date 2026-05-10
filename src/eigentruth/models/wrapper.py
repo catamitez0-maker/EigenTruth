@@ -2,17 +2,17 @@
 
 提供 EigenTruthWrapper，实现 / Provides EigenTruthWrapper, implementing:
 - warmup(): 真值流形冷启动 / Truth manifold cold start
-- generate(): 受控文本生成（自带幻觉监测与实时纠偏） / Controlled text generation (with built-in hallucination monitoring and real-time correction)
+- generate(): 受控文本生成 / Controlled text generation
 - forward(): 透传给原始模型 / Passthrough to the original model
 
 非侵入式设计：不修改原始模型参数，通过 hook 实现所有干预。
-Non-intrusive design: Does not modify original model parameters, implements all interventions via hooks.
+Non-intrusive design: implements all interventions via hooks.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional
 
 import torch
 import torch.nn as nn
@@ -22,15 +22,9 @@ from eigentruth.core.math_engine import TruthManifold
 from eigentruth.intervention.hooks import TruthProbe
 
 logger = logging.getLogger("eigentruth")
-
-# 配置 eigentruth logger 默认输出格式
-if not logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter(
-        "[EigenTruth] %(message)s"
-    ))
-    logger.addHandler(_handler)
-    logger.setLevel(logging.INFO)
+# 库应只添加 NullHandler，由调用方控制日志输出
+# Libraries should only add NullHandler; let callers control log output
+logger.addHandler(logging.NullHandler())
 
 
 class EigenTruthWrapper(nn.Module):
@@ -53,13 +47,17 @@ class EigenTruthWrapper(nn.Module):
         outputs = safe_model.generate(**inputs, max_new_tokens=100)
 
     Args:
-        model: HuggingFace CausalLM 模型实例 / HuggingFace CausalLM model instance.
-        target_layer_idx: 挂载探针的 Transformer 层索引（支持负索引） / Transformer layer index to mount the probe (supports negative indexing).
-        steering_lambda: 激活引导强度 (0 = 纯监测, 不干预) / Activation steering strength (0 = monitor only, no intervention).
-        mahalanobis_threshold: 马氏距离阈值，超出时触发引导与预警 / Mahalanobis distance threshold, triggers steering and warnings when exceeded.
+        model: HuggingFace CausalLM 模型实例 / Model instance.
+        target_layer_idx: 挂载探针的 Transformer 层索引
+            Transformer layer index (supports negative indexing).
+        steering_lambda: 激活引导强度 (0 = 纯监测)
+            Activation steering strength (0 = monitor only).
+        mahalanobis_threshold: 马氏距离阈值
+            Triggers steering and warnings when exceeded.
         hse_warning_threshold: HSE 预警阈值 / HSE warning threshold.
-        curvature: 庞加莱球曲率参数 / Poincaré ball curvature parameter.
+        curvature: 庞加莱球曲率 / Poincaré ball curvature.
         hse_window_size: HSE 滑动窗口大小 / HSE sliding window size.
+        custom_layer_path: 自定义层路径 / Custom layer attribute path.
     """
 
     def __init__(
@@ -71,6 +69,7 @@ class EigenTruthWrapper(nn.Module):
         hse_warning_threshold: float = 5.0,
         curvature: float = 1.0,
         hse_window_size: int = 20,
+        custom_layer_path: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -81,8 +80,9 @@ class EigenTruthWrapper(nn.Module):
         self.hse_warning_threshold = hse_warning_threshold
         self.curvature = curvature
         self.hse_window_size = hse_window_size
+        self.custom_layer_path = custom_layer_path
 
-        # 内部状态
+        # 内部状态 / Internal state
         self.manifold = TruthManifold()
         self.probe: Optional[TruthProbe] = None
         self._is_warmed_up: bool = False
@@ -98,7 +98,6 @@ class EigenTruthWrapper(nn.Module):
         tokenizer: Any,
         false_dataset: Optional[List[str]] = None,
         max_length: int = 128,
-        batch_size: int = 1,
     ) -> None:
         """使用事实语料构建真值流形。
         Build the truth manifold using a factual corpus.
@@ -111,23 +110,26 @@ class EigenTruthWrapper(nn.Module):
         Args:
             fact_dataset: 绝对正确的事实文本列表 / List of absolutely correct factual texts.
             tokenizer: HuggingFace tokenizer.
-            false_dataset: 绝对错误的对应文本列表 (用于构建对比方向) / List of corresponding completely false texts (used to build contrastive direction).
-            max_length: tokenize 最大长度 / max length for tokenization.
-            batch_size: 暂时为 1（MVP） / Currently 1 (MVP).
+            false_dataset: 绝对错误的文本列表 / List of false texts (for contrastive direction).
+            max_length: tokenize 最大长度 / Max length for tokenization.
         """
         self.manifold = TruthManifold()
         device = self._get_device()
 
         def _collect_states(dataset: List[str]) -> List[Tensor]:
             collected: List[Tensor] = []
-            
+
             def _collect_hook(module: nn.Module, input: Any, output: Any) -> None:
                 hidden = output[0] if isinstance(output, tuple) else output
-                # 提取最后一个 token 的表征以捕捉因果结论
-                h_last = hidden.detach()[:, -1, :].squeeze(0)  # [D]
-                collected.append(h_last.cpu())
+                # 提取最后一个 token 的表征，逐样本安全处理 B>1
+                # Extract last-token repr, safely handle batch_size > 1
+                h_last = hidden.detach()[:, -1, :]  # [B, D]
+                for i in range(h_last.shape[0]):
+                    collected.append(h_last[i].cpu())
 
-            layers = TruthProbe._find_layers(self.model)
+            layers = TruthProbe._find_layers(
+                self.model, custom_layer_path=self.custom_layer_path
+            )
             target_layer = layers[self.target_layer_idx]
             hook_handle = target_layer.register_forward_hook(_collect_hook)
 
@@ -137,7 +139,7 @@ class EigenTruthWrapper(nn.Module):
                         text, return_tensors="pt", max_length=max_length,
                         truncation=True, padding=True
                     ).to(device)
-                    
+
                     if isinstance(inputs, dict):
                         self.model(**inputs)
                     elif hasattr(inputs, "input_ids"):
@@ -149,7 +151,7 @@ class EigenTruthWrapper(nn.Module):
                         self.model(**dict(inputs))
             finally:
                 hook_handle.remove()
-                
+
             return collected
 
         logger.info("Collecting true representations...")
@@ -165,8 +167,11 @@ class EigenTruthWrapper(nn.Module):
             if len(false_states) > 0:
                 false_mean = torch.stack(false_states).mean(dim=0)
                 self.manifold.false_mean = false_mean.to(torch.float32)
-                # 构建 Truth Direction = True Mean - False Mean
-                self.manifold.contrastive_direction = self.manifold.mean - self.manifold.false_mean
+                # 构建 Truth Direction = True Mean - False Mean，并归一化
+                # Build Truth Direction = True Mean - False Mean, then normalize
+                raw_dir = self.manifold.mean - self.manifold.false_mean
+                norm = torch.norm(raw_dir).clamp(min=1e-8)
+                self.manifold.contrastive_direction = raw_dir / norm
                 logger.info("Contrastive direction successfully established.")
 
         if not self.manifold.is_ready():
@@ -282,8 +287,12 @@ class EigenTruthWrapper(nn.Module):
             steering_lambda=self.steering_lambda,
             threshold=self.mahalanobis_threshold,
             hse_window_size=self.hse_window_size,
+            curvature=self.curvature,
         )
-        self.probe.register(self.model, self.target_layer_idx)
+        self.probe.register(
+            self.model, self.target_layer_idx,
+            custom_layer_path=self.custom_layer_path,
+        )
 
     def _check_hse_warning(self) -> None:
         """检查 HSE 是否超阈值并输出预警。"""
@@ -317,11 +326,18 @@ class EigenTruthWrapper(nn.Module):
             self.probe.remove()
             self.probe = None
         self._is_warmed_up = False
-        logger.info("🔓 EigenTruth 探针已移除，模型恢复原始状态。 / EigenTruth probe removed, model restored to original state.")
+        logger.info(
+            "🔓 EigenTruth 探针已移除，模型恢复原始状态。"
+            " / EigenTruth probe removed, model restored."
+        )
 
     def __del__(self) -> None:
-        """析构时确保 hook 被移除。"""
+        """析构时确保 hook 被移除（跳过日志以避免解释器关闭时报错）。
+        Ensure hooks are removed during destruction (skip logging to avoid interpreter shutdown errors).
+        """
         try:
-            self.detach_probe()
+            if self.probe is not None:
+                self.probe.remove()
+                self.probe = None
         except Exception:
             pass

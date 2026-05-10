@@ -387,3 +387,23 @@ class TestTruthManifold:
         dist_orig = mahalanobis_distance(h, m.mean, m.cov_inv)
         dist_load = mahalanobis_distance(h, m2.mean, m2.cov_inv)
         assert torch.isclose(dist_orig, dist_load, atol=1e-6)
+
+    def test_save_load_with_contrastive_direction(self, tmp_path):
+        """save → load 包含 contrastive_direction 和 false_mean。"""
+        d = 16
+        torch.manual_seed(99)
+        m = TruthManifold()
+        for _ in range(5):
+            m.update(torch.randn(d))
+        m.false_mean = torch.randn(d)
+        m.contrastive_direction = torch.randn(d)
+
+        path = tmp_path / "manifold_contrastive.pt"
+        m.save(path)
+        m2 = TruthManifold.load(path)
+
+        assert m2.false_mean is not None
+        assert m2.contrastive_direction is not None
+        assert torch.allclose(m2.false_mean, m.false_mean)
+        assert torch.allclose(m2.contrastive_direction, m.contrastive_direction)
+

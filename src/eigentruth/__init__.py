@@ -13,9 +13,9 @@ __version__ = "0.1.0"
 
 from eigentruth.core.math_engine import (
     TruthManifold,
+    hyperbolic_semantic_entropy,
     mahalanobis_distance,
     poincare_map,
-    hyperbolic_semantic_entropy,
     sherman_morrison_update,
 )
 from eigentruth.intervention.hooks import TruthProbe

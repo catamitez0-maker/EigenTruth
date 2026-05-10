@@ -1,9 +1,10 @@
 """EigenTruth Intervention — 动态探针与 Hook 系统 / Dynamic Probe and Hook System.
 
-通过 PyTorch forward_hook 实现对 Transformer 隐状态的 / Using PyTorch forward_hook to achieve the following on Transformer hidden states:
-1. 实时拦截与马氏距离监测 / Real-time interception and Mahalanobis distance monitoring
+通过 PyTorch forward_hook 实现对 Transformer 隐状态的
+Using PyTorch forward_hook on Transformer hidden states:
+1. 实时拦截与马氏距离监测 / Real-time Mahalanobis distance monitoring
 2. 激活引导向量 (Steering) 注入 / Activation steering vector injection
-3. 庞加莱映射与双曲语义熵 (HSE) 跟踪 / Poincaré mapping and Hyperbolic Semantic Entropy (HSE) tracking
+3. 庞加莱映射与 HSE 跟踪 / Poincaré mapping and HSE tracking
 
 所有 Hook 内部操作均在 torch.no_grad() 下执行，
 截获的张量通过 .detach() 脱离计算图，严格防止显存泄漏。
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import Any, Deque, List, Optional, Tuple, Union
+from typing import Any, Deque, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -39,9 +40,12 @@ class TruthProbe:
 
     Attributes:
         manifold: 真值流形（由 warmup 阶段构建） / Truth manifold (built during warmup).
-        steering_lambda: 引导向量注入强度 (0 = 不干预) / Steering vector injection strength (0 = no intervention).
-        threshold: 马氏距离阈值，超出时触发引导干预 / Mahalanobis distance threshold; exceeds trigger steering intervention.
-        last_distance: 最近一次 hook 触发时的马氏距离 / The Mahalanobis distance from the last triggered hook.
+        steering_lambda: 引导向量注入强度 (0 = 不干预)
+            Steering vector injection strength (0 = no intervention).
+        threshold: 马氏距离阈值，超出时触发引导干预
+            Mahalanobis distance threshold; triggers steering.
+        last_distance: 最近一次 hook 触发时的马氏距离
+            Mahalanobis distance from the last triggered hook.
         last_hse: 最近一次计算的双曲语义熵 / The most recently computed Hyperbolic Semantic Entropy.
         is_active: hook 是否已挂载且激活 / Whether the hook is mounted and active.
     """
@@ -52,11 +56,13 @@ class TruthProbe:
         steering_lambda: float = 0.1,
         threshold: float = 15.0,
         hse_window_size: int = 20,
+        curvature: float = 1.0,
     ) -> None:
         self.manifold = manifold
         self.steering_lambda = steering_lambda
         self.threshold = threshold
         self.hse_window_size = hse_window_size
+        self.curvature = curvature
 
         # 运行时状态 (取 Batch 最大值供快速查询)
         self.last_distance: float = 0.0
@@ -73,7 +79,10 @@ class TruthProbe:
     # 生命周期管理
     # ------------------------------------------------------------------
 
-    def register(self, model: nn.Module, layer_idx: int) -> None:
+    def register(
+        self, model: nn.Module, layer_idx: int,
+        custom_layer_path: Optional[str] = None,
+    ) -> None:
         """在指定 Transformer 层注册 forward_hook。
         Register a forward_hook on the specified Transformer layer.
 
@@ -81,14 +90,15 @@ class TruthProbe:
         Supports negative indexing (e.g., -10 means the 10th layer from the end).
 
         Args:
-            model: HuggingFace CausalLM 模型（或任意含 `.model.layers` 的模型）/ HuggingFace CausalLM model.
-            layer_idx: 目标层索引，支持负索引 / Target layer index, supports negative indexing.
+            model: HuggingFace CausalLM 模型 / HuggingFace CausalLM model.
+            layer_idx: 目标层索引 / Target layer index.
+            custom_layer_path: 自定义层路径 (如 "model.encoder.blocks") / Custom layer path.
 
         Raises:
             ValueError: 无法定位 Transformer 层列表 / Cannot locate Transformer layer list.
             IndexError: layer_idx 超出范围 / layer_idx out of bounds.
         """
-        layers = self._find_layers(model)
+        layers = self._find_layers(model, custom_layer_path=custom_layer_path)
         target = layers[layer_idx]
 
         # 如果已有 hook，先移除
@@ -155,13 +165,20 @@ class TruthProbe:
             # 保存最大距离用于预警诊断
             self.last_distance = dist.max().item()
 
-            # 庞加莱映射 + HSE 追踪
-            h_poincare = poincare_map(h_vec) # [B, D]
+            # 庞加莱映射 + HSE 追踪 / Poincaré mapping + HSE tracking
+            h_poincare = poincare_map(h_vec, curvature=self.curvature)  # [B, D]
+            # 动态 Batch 保护：如果 Batch 大小变化，清空历史
+            # Dynamic Batch guard: clear history if batch size changes
+            if (len(self._poincare_history) > 0
+                    and self._poincare_history[-1].shape[0] != h_poincare.shape[0]):
+                self._poincare_history.clear()
             self._poincare_history.append(h_poincare.cpu())
 
             if len(self._poincare_history) >= 2:
-                pts = torch.stack(list(self._poincare_history)) # [W, B, D]
-                hse_batch = hyperbolic_semantic_entropy(pts) # [B]
+                pts = torch.stack(list(self._poincare_history))  # [W, B, D]
+                hse_batch = hyperbolic_semantic_entropy(
+                    pts, curvature=self.curvature
+                )  # [B]
                 self.last_hse = hse_batch.max().item()
 
             # 引导干预
@@ -172,7 +189,7 @@ class TruthProbe:
                 correction = self.steering_lambda * steering  # [B, D]
                 # 将无需干预的批次修正量清零
                 correction = correction * mask.unsqueeze(1).to(correction.dtype)
-                
+
                 hidden = hidden.clone()  # 避免原地修改影响计算图
                 hidden[:, -1:, :] = hidden[:, -1:, :] + correction.unsqueeze(1)
 
@@ -201,7 +218,7 @@ class TruthProbe:
         else:
             mean = self.manifold.mean.to(h.device)
             direction = mean.to(torch.float32) - h.to(torch.float32)
-            
+
         norm = torch.norm(direction, dim=-1, keepdim=True).clamp(min=1e-8)
         return (direction / norm).to(h.dtype)
 
@@ -210,11 +227,16 @@ class TruthProbe:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _find_layers(model: nn.Module) -> nn.ModuleList:
+    def _find_layers(
+        model: nn.Module,
+        custom_layer_path: Optional[str] = None,
+    ) -> nn.ModuleList:
         """在 HF 模型中定位 Transformer 层列表。
         Locate the list of Transformer layers in an HF model.
 
-        尝试常见路径 / Try common paths: model.model.layers, model.transformer.h, etc.
+        Args:
+            model: 目标模型 / Target model.
+            custom_layer_path: 自定义属性路径 (如 "model.encoder.blocks") / Custom attribute path.
 
         Returns:
             nn.ModuleList 或类似可索引容器 / nn.ModuleList or similar indexable container.
@@ -222,7 +244,22 @@ class TruthProbe:
         Raises:
             ValueError: 无法自动定位层列表 / Cannot automatically locate layer list.
         """
-        # 常见 HF 架构的层路径
+        # 优先使用用户自定义路径 / Prefer user-specified custom path
+        if custom_layer_path is not None:
+            obj = model
+            try:
+                for attr in custom_layer_path.split("."):
+                    obj = getattr(obj, attr)
+                if isinstance(obj, (nn.ModuleList, list)) and len(obj) > 0:
+                    return obj
+            except AttributeError:
+                pass
+            raise ValueError(
+                f"Custom layer path '{custom_layer_path}' not found on model. "
+                f"Please verify the attribute path."
+            )
+
+        # 常见 HF 架构的层路径 / Common HF architecture layer paths
         candidates = [
             ("model", "layers"),        # Llama, Qwen, Mistral
             ("transformer", "h"),       # GPT-2, GPT-Neo
@@ -241,13 +278,14 @@ class TruthProbe:
                 continue
 
         # 回退: 如果模型本身就有 .layers 属性（测试用简单模型）
+        # Fallback: model.layers (for simple test models)
         if hasattr(model, "layers") and isinstance(model.layers, (nn.ModuleList, list)):
             return model.layers
 
         raise ValueError(
             "Cannot locate transformer layers. "
             "Supported patterns: model.model.layers, model.transformer.h, etc. "
-            "If using a custom model, ensure it has a .layers attribute."
+            "Use custom_layer_path='your.path.to.layers' for custom models."
         )
 
     @staticmethod
@@ -263,9 +301,12 @@ class TruthProbe:
         if isinstance(output, Tensor):
             return output, False, ()
         # BaseModelOutputWithPast 等 dataclass 式输出
+        # Handle dataclass-style outputs like BaseModelOutputWithPast
         if hasattr(output, "last_hidden_state"):
             return output.last_hidden_state, False, ()
-        # 回退
+        if hasattr(output, "hidden_states") and output.hidden_states is not None:
+            return output.hidden_states, False, ()
+        # 回退 / Fallback
         raise TypeError(
             f"Unsupported output type from hooked layer: {type(output)}. "
             f"Expected Tensor, tuple, or HF BaseModelOutput."
