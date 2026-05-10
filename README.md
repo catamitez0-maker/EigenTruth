@@ -63,10 +63,10 @@
 
 ```bash
 # 从 GitHub 安装
-pip install git+https://github.com/EigenTruth/EigenTruth.git
+pip install git+https://github.com/catamitez0-maker/EigenTruth.git
 
 # 开发模式安装
-git clone https://github.com/EigenTruth/EigenTruth.git
+git clone https://github.com/catamitez0-maker/EigenTruth.git
 cd EigenTruth
 pip install -e .[dev]
 ```

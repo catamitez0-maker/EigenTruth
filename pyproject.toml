@@ -38,9 +38,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/EigenTruth/EigenTruth"
-Repository = "https://github.com/EigenTruth/EigenTruth"
-Issues = "https://github.com/EigenTruth/EigenTruth/issues"
+Homepage = "https://github.com/catamitez0-maker/EigenTruth"
+Repository = "https://github.com/catamitez0-maker/EigenTruth"
+Issues = "https://github.com/catamitez0-maker/EigenTruth/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

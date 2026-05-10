@@ -5,7 +5,7 @@
 ## 开发环境设置
 
 ```bash
-git clone https://github.com/EigenTruth/EigenTruth.git
+git clone https://github.com/catamitez0-maker/EigenTruth.git
 cd EigenTruth
 python -m venv .venv
 source .venv/bin/activate
