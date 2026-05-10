@@ -352,3 +352,38 @@ class TestTruthManifold:
         for i in range(10):
             m.update(torch.randn(8))
         assert m.n == 10
+
+    def test_save_load_roundtrip(self, tmp_path):
+        """save → load 往返保持所有字段不变。"""
+        d = 16
+        torch.manual_seed(77)
+        m = TruthManifold()
+        for _ in range(5):
+            m.update(torch.randn(d))
+
+        path = tmp_path / "manifold.pt"
+        m.save(path)
+
+        m2 = TruthManifold.load(path)
+        assert m2.n == m.n
+        assert m2.hidden_dim == m.hidden_dim
+        assert torch.allclose(m2.mean, m.mean)
+        assert torch.allclose(m2.cov_inv, m.cov_inv)
+        assert m2.is_ready()
+
+    def test_load_preserves_usability(self, tmp_path):
+        """加载后的流形可正常用于马氏距离计算。"""
+        d = 16
+        torch.manual_seed(88)
+        m = TruthManifold()
+        for _ in range(5):
+            m.update(torch.randn(d))
+
+        path = tmp_path / "manifold.pt"
+        m.save(path)
+        m2 = TruthManifold.load(path)
+
+        h = torch.randn(d)
+        dist_orig = mahalanobis_distance(h, m.mean, m.cov_inv)
+        dist_load = mahalanobis_distance(h, m2.mean, m2.cov_inv)
+        assert torch.isclose(dist_orig, dist_load, atol=1e-6)

@@ -12,7 +12,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
 import torch
 from torch import Tensor
@@ -78,6 +79,40 @@ class TruthManifold:
     def is_ready(self) -> bool:
         """流形至少经过 2 个样本后方可使用。"""
         return self.n >= 2 and self.mean is not None and self.cov_inv is not None
+
+    def save(self, path: Union[str, Path]) -> None:
+        """将流形序列化到磁盘。
+
+        Args:
+            path: 保存路径 (建议后缀 .pt 或 .bin).
+        """
+        state = {
+            "mean": self.mean,
+            "cov_inv": self.cov_inv,
+            "n": self.n,
+            "hidden_dim": self.hidden_dim,
+        }
+        torch.save(state, path)
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "TruthManifold":
+        """从磁盘加载流形。
+
+        Args:
+            path: 之前由 save() 保存的文件路径.
+
+        Returns:
+            恢复后的 TruthManifold 实例.
+        """
+        state = torch.load(path, weights_only=True)
+        manifold = cls()
+        manifold.mean = state["mean"]
+        manifold.cov_inv = state["cov_inv"]
+        manifold.n = state["n"]
+        manifold.hidden_dim = state["hidden_dim"]
+        if manifold.mean is not None:
+            manifold._device = manifold.mean.device
+        return manifold
 
 
 # ---------------------------------------------------------------------------
