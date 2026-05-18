@@ -14,9 +14,11 @@ Intercepted tensors are detached from the compute graph to strictly prevent memo
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections import deque
-from typing import Any, Deque, Optional, Tuple, Union
+from dataclasses import is_dataclass, replace
+from typing import Any, Callable, Deque, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -99,7 +101,7 @@ class TruthProbe:
             IndexError: layer_idx 超出范围 / layer_idx out of bounds.
         """
         layers = self._find_layers(model, custom_layer_path=custom_layer_path)
-        target = layers[layer_idx]
+        target = self._select_layer(layers, layer_idx)
 
         # 如果已有 hook，先移除
         self.remove()
@@ -147,8 +149,8 @@ class TruthProbe:
         - torch.no_grad() 包裹所有运算 / Wrap all operations in torch.no_grad()
         - 只处理最后一个 token (h[:, -1:, :]) / Only process the last token (h[:, -1:, :])
         """
-        # 防线 3: 处理 tuple 输出（HF 模型常见）
-        hidden, is_tuple, rest = self._unpack_output(output)
+        # 防线 3: 处理 tuple / Tensor / HF ModelOutput 输出
+        hidden, repack_output = self._unpack_output(output)
 
         if not self.manifold.is_ready():
             return output  # 流形未就绪，直接透传
@@ -157,6 +159,7 @@ class TruthProbe:
             # 防线 2+3: detach + 切片最后一个 token
             h_last = hidden[:, -1:, :].detach()  # [B, 1, D]
             h_vec = h_last.squeeze(1)              # [B, D]
+            self._ensure_manifold_device(h_vec.device)
 
             # 批量计算马氏距离 [B]
             dist = mahalanobis_distance(
@@ -193,7 +196,7 @@ class TruthProbe:
                 hidden = hidden.clone()  # 避免原地修改影响计算图
                 hidden[:, -1:, :] = hidden[:, -1:, :] + correction.unsqueeze(1)
 
-        return self._repack_output(hidden, is_tuple, rest)
+        return repack_output(hidden)
 
     # ------------------------------------------------------------------
     # 引导向量
@@ -225,6 +228,22 @@ class TruthProbe:
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
+
+    def _ensure_manifold_device(self, device: torch.device) -> None:
+        """Keep manifold tensors on the same device as the intercepted hidden states."""
+        if self.manifold.mean is None or self.manifold.cov_inv is None:
+            return
+        if self.manifold.mean.device != device or self.manifold.cov_inv.device != device:
+            self.manifold.to(device)
+
+    @staticmethod
+    def _select_layer(layers: Any, layer_idx: int) -> nn.Module:
+        try:
+            return layers[layer_idx]
+        except IndexError as exc:
+            raise IndexError(
+                f"layer_idx {layer_idx} is out of range for {len(layers)} transformer layers."
+            ) from exc
 
     @staticmethod
     def _find_layers(
@@ -289,23 +308,27 @@ class TruthProbe:
         )
 
     @staticmethod
-    def _unpack_output(output: Any) -> Tuple[Tensor, bool, tuple]:
+    def _unpack_output(output: Any) -> Tuple[Tensor, Callable[[Tensor], Any]]:
         """解包 HF 模型输出，提取 hidden_states 张量。
         Unpack HF model output to extract the hidden_states tensor.
 
         Returns:
-            (hidden_states, is_tuple, rest_of_tuple)
+            (hidden_states, repack_callable)
         """
         if isinstance(output, tuple):
-            return output[0], True, output[1:]
+            return output[0], lambda hidden: (hidden,) + output[1:]
         if isinstance(output, Tensor):
-            return output, False, ()
+            return output, lambda hidden: hidden
         # BaseModelOutputWithPast 等 dataclass 式输出
         # Handle dataclass-style outputs like BaseModelOutputWithPast
-        if hasattr(output, "last_hidden_state"):
-            return output.last_hidden_state, False, ()
-        if hasattr(output, "hidden_states") and output.hidden_states is not None:
-            return output.hidden_states, False, ()
+        if hasattr(output, "last_hidden_state") and isinstance(output.last_hidden_state, Tensor):
+            return output.last_hidden_state, lambda hidden: TruthProbe._replace_output_attr(
+                output, "last_hidden_state", hidden
+            )
+        if hasattr(output, "hidden_states") and isinstance(output.hidden_states, Tensor):
+            return output.hidden_states, lambda hidden: TruthProbe._replace_output_attr(
+                output, "hidden_states", hidden
+            )
         # 回退 / Fallback
         raise TypeError(
             f"Unsupported output type from hooked layer: {type(output)}. "
@@ -313,12 +336,21 @@ class TruthProbe:
         )
 
     @staticmethod
-    def _repack_output(
-        hidden: Tensor, is_tuple: bool, rest: tuple
-    ) -> Union[Tensor, tuple]:
+    def _replace_output_attr(output: Any, attr: str, hidden: Tensor) -> Any:
         """将修改后的 hidden_states 重新打包为原始格式。
         Repack the modified hidden_states into their original format.
         """
-        if is_tuple:
-            return (hidden,) + rest
-        return hidden
+        if is_dataclass(output):
+            try:
+                return replace(output, **{attr: hidden})
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            cloned = copy.copy(output)
+            setattr(cloned, attr, hidden)
+            return cloned
+        except Exception as exc:
+            raise TypeError(
+                f"Cannot repack hooked layer output of type {type(output)} with attribute '{attr}'."
+            ) from exc

@@ -1,7 +1,7 @@
 """EigenTruth Core — 防崩溃数学引擎 / Crash-proof Math Engine.
 
 基于几何动力学的底层数学原语，包括 / Core mathematical primitives based on geometric dynamics, including:
-- Sherman-Morrison 在线协方差逆更新 / Online covariance inverse update via Sherman-Morrison
+- Sherman-Morrison 在线 precision proxy 更新 / Online precision-proxy update via Sherman-Morrison
 - 马氏距离计算 / Mahalanobis distance computation
 - 庞加莱球模型映射 / Poincaré ball model mapping
 - 双曲语义熵 (HSE) / Hyperbolic Semantic Entropy (HSE)
@@ -27,6 +27,11 @@ from torch import Tensor
 class TruthManifold:
     """真值流形：存储事实语料的统计特征。
     Truth Manifold: Stores statistical features of the factual corpus.
+
+    `cov_inv` 是用于快速马氏距离监测的正则化在线 precision proxy，
+    不是严格的样本协方差矩阵逆。
+    `cov_inv` is a regularized online precision proxy for fast Mahalanobis
+    monitoring, not an exact inverse of the empirical sample covariance.
 
     Attributes:
         mean: 隐状态质心向量 / Hidden state centroid vector, shape [hidden_dim].
@@ -63,6 +68,10 @@ class TruthManifold:
             epsilon: Sherman-Morrison 分母正则项 / Denominator regularization term.
         """
         h = h.detach()
+        if h.ndim != 1:
+            raise ValueError(
+                f"TruthManifold.update() expects a 1D hidden state vector, got shape {tuple(h.shape)}."
+            )
 
         if self.mean is None:
             # 首次初始化
@@ -75,6 +84,11 @@ class TruthManifold:
             self.n = 1
             return
 
+        if h.shape[-1] != self.hidden_dim:
+            raise ValueError(
+                f"Hidden dimension mismatch: expected {self.hidden_dim}, got {h.shape[-1]}."
+            )
+
         self.n += 1
         # 增量协方差逆更新（必须在均值更新前计算 delta）
         # Compute delta BEFORE updating the mean (critical for correct covariance estimation)
@@ -82,6 +96,20 @@ class TruthManifold:
         self.mean = self.mean + (h.to(torch.float32) - self.mean) / self.n
         delta = h.to(torch.float32) - old_mean
         self.cov_inv = sherman_morrison_update(self.cov_inv, delta, epsilon)
+
+    def to(self, device: Union[str, torch.device]) -> "TruthManifold":
+        """Move manifold tensors to a device in-place and return self."""
+        device = torch.device(device)
+        if self.mean is not None:
+            self.mean = self.mean.to(device)
+        if self.cov_inv is not None:
+            self.cov_inv = self.cov_inv.to(device)
+        if self.false_mean is not None:
+            self.false_mean = self.false_mean.to(device)
+        if self.contrastive_direction is not None:
+            self.contrastive_direction = self.contrastive_direction.to(device)
+        self._device = device
+        return self
 
     def is_ready(self) -> bool:
         """流形至少经过 2 个样本后方可使用。"""

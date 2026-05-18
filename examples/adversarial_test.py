@@ -17,7 +17,7 @@ def main():
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32)
     except Exception as e:
         print(f"❌ Failed to load model: {e}")
         sys.exit(1)

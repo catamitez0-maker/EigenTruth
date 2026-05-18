@@ -348,6 +348,21 @@ class TestTruthManifold:
             m.update(torch.randn(8))
         assert m.n == 10
 
+    def test_rejects_non_vector_update(self):
+        """update 只接受单个 1D hidden state。"""
+        m = TruthManifold()
+        import pytest
+        with pytest.raises(ValueError, match="1D hidden state"):
+            m.update(torch.randn(2, 8))
+
+    def test_rejects_hidden_dim_mismatch(self):
+        """后续样本维度必须与首次样本一致。"""
+        m = TruthManifold()
+        m.update(torch.randn(8))
+        import pytest
+        with pytest.raises(ValueError, match="Hidden dimension mismatch"):
+            m.update(torch.randn(9))
+
     def test_save_load_roundtrip(self, tmp_path):
         """save → load 往返保持所有字段不变。"""
         d = 16

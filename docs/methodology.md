@@ -19,8 +19,8 @@ a steering vector toward a factual centroid or a contrastive truth direction.
 ## Pipeline
 
 1. Collect hidden states from a target Transformer layer on factual examples.
-2. Incrementally build a `TruthManifold` using online mean and inverse covariance
-   updates.
+2. Incrementally build a `TruthManifold` using an online mean and a regularized
+   inverse-scatter precision proxy.
 3. Optionally collect false examples to build a contrastive direction.
 4. Register a PyTorch `forward_hook` on the selected layer.
 5. During generation, compute:
@@ -39,6 +39,16 @@ EigenTruth measures geometry in representation space:
 - whether a configured intervention changes generation trajectories
 
 These diagnostics are useful for experiments, ablations, and qualitative demos.
+
+## Distance Calibration
+
+The current `cov_inv` field is a Sherman-Morrison online precision proxy over
+warmup-state deviations. It is designed for fast monitoring and relative
+threshold sweeps, not as an exact inverse of the empirical sample covariance.
+
+Treat Mahalanobis thresholds as experiment-specific hyperparameters. Calibrate
+them per model, target layer, warmup set, and generation setup before comparing
+results.
 
 ## What EigenTruth Does Not Prove
 
@@ -74,6 +84,8 @@ Recommended external evaluation:
 - Results depend strongly on the target layer.
 - Warmup data quality matters.
 - Small warmup sets can create fragile manifolds.
+- Mahalanobis thresholds are not portable across models or layers without
+  calibration.
 - Steering can change wording without improving truthfulness.
 - A lower Mahalanobis distance does not guarantee factual correctness.
 - HSE is an experimental dispersion signal, not a calibrated risk score.

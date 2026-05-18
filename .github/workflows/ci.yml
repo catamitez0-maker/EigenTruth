@@ -28,7 +28,7 @@ jobs:
           pip install -e .[dev]
 
       - name: Lint with ruff
-        run: ruff check src/
+        run: ruff check src tests examples
 
       - name: Run tests
         run: pytest tests/ -v --cov=eigentruth --cov-report=term-missing

@@ -4,6 +4,9 @@
 覆盖：hook 注册/移除、距离计算、引导注入、输出格式处理。
 """
 
+from dataclasses import dataclass
+
+import pytest
 import torch
 import torch.nn as nn
 
@@ -36,6 +39,25 @@ class MockTransformerLayerPlain(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.linear(x)
+
+
+@dataclass
+class MockLayerOutput:
+    """模拟 HF dataclass/ModelOutput 风格输出。"""
+
+    last_hidden_state: torch.Tensor
+    marker: str = "keep-me"
+
+
+class MockTransformerLayerDataclass(nn.Module):
+    """模拟返回 dataclass output 的层。"""
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.linear = nn.Linear(hidden_dim, hidden_dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> MockLayerOutput:
+        return MockLayerOutput(last_hidden_state=self.linear(x))
 
 
 class MockModel(nn.Module):
@@ -253,6 +275,30 @@ class TestOutputFormatHandling:
             assert isinstance(out, torch.Tensor)
         probe.remove()
 
+    def test_dataclass_output_preserved(self):
+        """hook 处理 dataclass/ModelOutput 风格输出且保留原类型。"""
+        manifold = _build_manifold(32)
+        probe = TruthProbe(manifold, threshold=1e10)
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([MockTransformerLayerDataclass(32)])
+
+            def forward(self, x):
+                return self.layers[0](x)
+
+        model = SimpleModel()
+        probe.register(model, layer_idx=0)
+
+        x = torch.randn(1, 3, 32)
+        with torch.no_grad():
+            out = model(x)
+            assert isinstance(out, MockLayerOutput)
+            assert out.marker == "keep-me"
+            assert out.last_hidden_state.shape == (1, 3, 32)
+        probe.remove()
+
 
 # ===================================================================
 # HSE 追踪
@@ -360,6 +406,14 @@ class TestFindLayers:
     def test_raises_on_no_layers(self):
         """无层列表时抛出 ValueError。"""
         model = nn.Linear(10, 10)
-        import pytest
         with pytest.raises(ValueError):
             TruthProbe._find_layers(model)
+
+    def test_layer_index_error_is_descriptive(self):
+        """层索引越界时给出模型层数。"""
+        model = MockModel(4, 32)
+        manifold = _build_manifold(32)
+        probe = TruthProbe(manifold)
+
+        with pytest.raises(IndexError, match="out of range for 4 transformer layers"):
+            probe.register(model, layer_idx=-10)

@@ -6,6 +6,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -135,6 +136,7 @@ class TestWarmup:
         assert wrapper.manifold.is_ready()
         assert wrapper.manifold.n == 3
         assert wrapper.manifold.hidden_dim == 32
+        assert wrapper.manifold.mean.device == next(model.parameters()).device
 
     def test_warmup_activates_probe(self):
         model = MockCausalLM(n_layers=4, hidden_dim=32)
@@ -154,6 +156,29 @@ class TestWarmup:
         with patch("eigentruth.models.wrapper.logger") as mock_logger:
             wrapper.warmup(["唯一事实"], tokenizer)
             mock_logger.warning.assert_called()
+        assert not wrapper.is_warmed_up
+        assert wrapper.probe is None
+        assert not wrapper.manifold.is_ready()
+
+    def test_warmup_rejects_empty_dataset(self):
+        model = MockCausalLM(n_layers=4, hidden_dim=32)
+        wrapper = EigenTruthWrapper(model, target_layer_idx=-1)
+        tokenizer = MockTokenizer()
+
+        with pytest.raises(ValueError, match="fact_dataset"):
+            wrapper.warmup([], tokenizer)
+
+    def test_repeated_warmup_replaces_probe_hook(self):
+        model = MockCausalLM(n_layers=4, hidden_dim=32)
+        wrapper = EigenTruthWrapper(model, target_layer_idx=-1)
+        tokenizer = MockTokenizer()
+        target_layer = model.model.layers[-1]
+
+        wrapper.warmup(["事实一", "事实二", "事实三"], tokenizer)
+        assert len(target_layer._forward_hooks) == 1
+
+        wrapper.warmup(["事实四", "事实五", "事实六"], tokenizer)
+        assert len(target_layer._forward_hooks) == 1
 
     def test_warmup_with_false_dataset_computes_contrastive_direction(self):
         model = MockCausalLM(n_layers=4, hidden_dim=32)
@@ -238,6 +263,7 @@ class TestDiagnostics:
         wrapper = EigenTruthWrapper(model)
         diag = wrapper.get_diagnostics()
         assert diag["is_warmed_up"] is False
+        assert diag["manifold_ready"] is False
         assert diag["manifold_samples"] == 0
         assert diag["probe_active"] is False
 
@@ -249,6 +275,7 @@ class TestDiagnostics:
 
         diag = wrapper.get_diagnostics()
         assert diag["is_warmed_up"] is True
+        assert diag["manifold_ready"] is True
         assert diag["manifold_samples"] == 3
         assert diag["hidden_dim"] == 32
         assert diag["probe_active"] is True

@@ -10,7 +10,7 @@
 [![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace_Compatible-yellow.svg)](https://huggingface.co)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://python.org)
-[![Tests: 68 passed](https://img.shields.io/badge/Tests-68%20passed-brightgreen.svg)]()
+[![Tests: 74 passed](https://img.shields.io/badge/Tests-74%20passed-brightgreen.svg)]()
 [![Lint: ruff](https://img.shields.io/badge/Lint-ruff%20passed-brightgreen.svg)]()
 
 > *"幻觉不是知识的缺失，而是表征流向的几何偏离。"*
@@ -44,8 +44,8 @@
 
 | | 特性 / Feature | 描述 / Description |
 |---|---|---|
-| 🔬 | **Sherman-Morrison 在线更新** | 增量构建协方差逆矩阵，O(d²) 复杂度，无需全量求逆 |
-| | **Sherman-Morrison Online Update** | *Incremental covariance inverse, O(d²) complexity, no full inversion needed* |
+| 🔬 | **Sherman-Morrison 在线更新** | 增量构建正则化 precision proxy，O(d²) 复杂度，无需全量求逆 |
+| | **Sherman-Morrison Online Update** | *Incremental regularized precision proxy, O(d²) complexity, no full inversion needed* |
 | 📏 | **马氏距离实时监测** | 逐 token 检测隐状态偏离真值流形的程度 |
 | | **Mahalanobis Distance Monitoring** | *Per-token detection of hidden state deviation from truth manifold* |
 | 🌀 | **庞加莱球映射** | 将高维表征投射到双曲空间，捕捉层次化语义结构 |
@@ -214,6 +214,10 @@ EigenTruthWrapper(
 )
 ```
 
+> `mahalanobis_threshold` is experiment-specific. Calibrate it per model,
+> target layer, warmup set, and generation setup; it is not a portable factuality
+> score.
+
 ---
 
 ## 🧪 测试 / Testing
@@ -225,7 +229,7 @@ pytest tests/ -v
 # 代码检查 / Lint check
 ruff check src tests examples
 
-# 当前状态: 68 passed
+# 当前状态: 74 passed
 ```
 
 ---
@@ -242,7 +246,7 @@ EigenTruth/
 │   ├── models/
 │   │   └── wrapper.py           # EigenTruthWrapper: 用户级 API
 │   └── __init__.py              # 公开 API 导出
-├── tests/                       # 68 个自动化测试
+├── tests/                       # 74 个自动化测试
 ├── examples/
 │   ├── qwen_truth_demo.py       # 基础 Demo
 │   └── adversarial_test.py      # 对抗性测试
@@ -260,7 +264,7 @@ EigenTruth/
 - [x] 非侵入式 Hook 系统
 - [x] 对比式引导 (Contrastive Steering)
 - [x] 双语文档与注释
-- [x] 68 个自动化测试
+- [x] 74 个自动化测试
 - [x] ruff lint 覆盖 src/tests/examples
 - [ ] 🔜 TruthfulQA / HaluEval 量化基准
 - [ ] 🔜 自动层探测 (Auto Layer Routing)

@@ -113,6 +113,13 @@ class EigenTruthWrapper(nn.Module):
             false_dataset: 绝对错误的文本列表 / List of false texts (for contrastive direction).
             max_length: tokenize 最大长度 / Max length for tokenization.
         """
+        if len(fact_dataset) == 0:
+            raise ValueError("fact_dataset must contain at least one factual text.")
+
+        if self.probe is not None:
+            self.probe.remove()
+            self.probe = None
+        self._is_warmed_up = False
         self.manifold = TruthManifold()
         device = self._get_device()
 
@@ -120,7 +127,7 @@ class EigenTruthWrapper(nn.Module):
             collected: List[Tensor] = []
 
             def _collect_hook(module: nn.Module, input: Any, output: Any) -> None:
-                hidden = output[0] if isinstance(output, tuple) else output
+                hidden, _ = TruthProbe._unpack_output(output)
                 # 提取最后一个 token 的表征，逐样本安全处理 B>1
                 # Extract last-token repr, safely handle batch_size > 1
                 h_last = hidden.detach()[:, -1, :]  # [B, D]
@@ -130,7 +137,7 @@ class EigenTruthWrapper(nn.Module):
             layers = TruthProbe._find_layers(
                 self.model, custom_layer_path=self.custom_layer_path
             )
-            target_layer = layers[self.target_layer_idx]
+            target_layer = TruthProbe._select_layer(layers, self.target_layer_idx)
             hook_handle = target_layer.register_forward_hook(_collect_hook)
 
             try:
@@ -156,6 +163,11 @@ class EigenTruthWrapper(nn.Module):
 
         logger.info("Collecting true representations...")
         fact_states = _collect_states(fact_dataset)
+        if len(fact_states) == 0:
+            raise RuntimeError(
+                "No hidden states were collected during warmup. "
+                "Check target_layer_idx/custom_layer_path and the model forward path."
+            )
 
         # 用收集到的隐状态构建流形
         for h in fact_states:
@@ -179,7 +191,9 @@ class EigenTruthWrapper(nn.Module):
                 f"⚠️ 流形构建不完整（仅 {self.manifold.n} 个样本）。"
                 f"建议至少提供 2 条以上事实语料。"
             )
+            return
         else:
+            self.manifold.to(device)
             logger.info(
                 f"✅ 真值流形已就绪 — {self.manifold.n} 个样本, "
                 f"hidden_dim={self.manifold.hidden_dim}"
@@ -263,6 +277,7 @@ class EigenTruthWrapper(nn.Module):
         """获取诊断信息字典。"""
         return {
             "is_warmed_up": self._is_warmed_up,
+            "manifold_ready": self.manifold.is_ready(),
             "manifold_samples": self.manifold.n,
             "hidden_dim": self.manifold.hidden_dim,
             "last_mahalanobis_distance": self.last_distance,
