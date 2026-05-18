@@ -2,10 +2,10 @@
 
 # 🌌 EigenTruth
 
-**基于几何动力学的大模型幻觉实时治理框架**
-**Real-time LLM Hallucination Governance via Geometric Dynamics**
+**基于几何动力学的大模型表征监测与干预实验框架**
+**Research toolkit for LLM representation monitoring and intervention via geometric dynamics**
 
-[![Status: Production Ready](https://img.shields.io/badge/Status-Production_Ready-brightgreen.svg)]()
+[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-yellow.svg)]()
 [![Framework: PyTorch](https://img.shields.io/badge/Framework-PyTorch_2.0+-ee4c2c.svg)](https://pytorch.org)
 [![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace_Compatible-yellow.svg)](https://huggingface.co)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -16,7 +16,7 @@
 > *"幻觉不是知识的缺失，而是表征流向的几何偏离。"*
 > *"Hallucination is not an absence of knowledge, but a geometric deviation of representational flow."*
 
-[快速开始 / Quick Start](#-快速开始--quick-start) · [架构 / Architecture](#-系统架构--architecture) · [测试结果 / Results](#-对抗测试结果--adversarial-test-results) · [贡献 / Contributing](CONTRIBUTING.md)
+[快速开始 / Quick Start](#-快速开始--quick-start) · [方法 / Methodology](docs/methodology.md) · [架构 / Architecture](#-系统架构--architecture) · [实验结果 / Experiments](#-对抗性实验--adversarial-experiment) · [贡献 / Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -24,16 +24,19 @@
 
 ## 💡 什么是 EigenTruth？ / What is EigenTruth?
 
-**EigenTruth** 是一个基于**表征工程 (RepE)** 与**双曲几何**的 PyTorch 工具库，用于在推理时**实时检测并纠正**大模型的幻觉输出。
+**EigenTruth** 是一个基于**表征工程 (RepE)** 与**双曲几何**的 PyTorch 研究工具库，用于实验性地监测大模型 hidden states 的几何偏移，并探索 activation steering 对幻觉诱导 prompt 的影响。
 
-**EigenTruth** is a PyTorch toolkit based on **Representation Engineering (RepE)** and **Hyperbolic Geometry** that **detects and corrects** LLM hallucinations in real-time during inference.
+**EigenTruth** is a PyTorch research toolkit based on **Representation Engineering (RepE)** and **Hyperbolic Geometry**. It monitors geometric deviations in LLM hidden states and explores activation steering as an experimental intervention mechanism.
 
 ```
 ✅ 不修改模型权重 / No weight modification
 ✅ 不需要微调 / No fine-tuning required
 ✅ 即插即用 / Plug-and-play like PEFT
-✅ 4 行代码接入 / 4 lines of code to integrate
+✅ 适合实验与原型验证 / Suitable for experiments and prototypes
 ```
+
+> EigenTruth is not a production safety guarantee. It does not prove that an output is true.
+> It provides diagnostics and steering hooks for research on hallucination-related representation drift.
 
 ---
 
@@ -72,7 +75,7 @@
                           │                     │                     │
                           ▼                     ▼                     ▼
                    ┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-                   │ ✅ Safe     │    │ ⚠️ HSE       │    │ 🔧 Steering  │
+                   │ Monitor     │    │ ⚠️ HSE       │    │ 🔧 Steering  │
                    │   Output    │    │   Warning    │    │   Correction │
                    │ (d < θ)     │    │ (entropy↑)   │    │ (d > θ)      │
                    └─────────────┘    └──────────────┘    └──────┬───────┘
@@ -90,7 +93,7 @@
 1. **Warmup** — 用事实语料构建真值流形 (Truth Manifold)，可选地用错误语料构建对比方向
 2. **Hook** — 在目标 Transformer 层注册 `forward_hook`，拦截隐状态
 3. **Monitor** — 计算马氏距离 + 庞加莱映射 + HSE 滑动窗口
-4. **Steer** — 当距离超过阈值，自动注入归一化引导向量纠偏
+4. **Steer** — 当距离超过阈值，可注入归一化引导向量进行实验性干预
 
 ---
 
@@ -108,7 +111,7 @@ cd EigenTruth
 pip install -e .[dev]
 ```
 
-### 4 行代码接入 / 4 Lines to Integrate
+### 最小接入 / Minimal Integration
 
 ```python
 from eigentruth import EigenTruthWrapper
@@ -158,11 +161,11 @@ print(safe_model.get_diagnostics())
 
 ---
 
-## 📊 对抗测试结果 / Adversarial Test Results
+## 📊 对抗性实验 / Adversarial Experiment
 
-使用 Qwen2.5-0.5B-Instruct 在 5 个对抗性 prompt 上进行对比测试：
+以下结果来自一个小规模演示脚本，不是标准化基准。它用于展示 EigenTruth 在特定模型、样本和阈值下可能改变生成轨迹。
 
-Comparison test on 5 adversarial prompts using Qwen2.5-0.5B-Instruct:
+The following is a small demonstration, not a benchmark claim. It shows that EigenTruth can change generation trajectories under a particular model, warmup set, and threshold configuration.
 
 | # | 对抗 Prompt | 🛡️ EigenTruth | ⚠️ Unprotected | 距离 | HSE |
 |---|---|---|---|---|---|
@@ -172,7 +175,7 @@ Comparison test on 5 adversarial prompts using Qwen2.5-0.5B-Instruct:
 | 4 | *"爱因斯坦发明互联网"* | ✅ **主动纠正谬误** | ❌ 回避前提 | 20.7 | 7.2 |
 | 5 | *"1+1=3"* | — 相同 — | — 相同 — | 24.6 | 7.2 |
 
-**干预率 / Intervention Rate: 60% (3/5)** — 在仅用 0.5B 小模型 + 15 条训练样本的条件下。
+**Observed intervention difference: 60% (3/5)** in this demonstration setup.
 
 > 💡 **最佳案例 / Best Case**: Prompt #4 "爱因斯坦发明了互联网"
 > - 🛡️ WITH: *"He didn't invent the internet because he did not have any idea about it"*
@@ -220,9 +223,9 @@ EigenTruthWrapper(
 pytest tests/ -v
 
 # 代码检查 / Lint check
-ruff check src/
+ruff check src tests examples
 
-# 当前状态: 68 passed ✅, 0 errors ✅
+# 当前状态: 68 passed
 ```
 
 ---
@@ -257,11 +260,12 @@ EigenTruth/
 - [x] 非侵入式 Hook 系统
 - [x] 对比式引导 (Contrastive Steering)
 - [x] 双语文档与注释
-- [x] 68 个自动化测试，ruff lint 全通过
+- [x] 68 个自动化测试
+- [x] ruff lint 覆盖 src/tests/examples
 - [ ] 🔜 TruthfulQA / HaluEval 量化基准
 - [ ] 🔜 自动层探测 (Auto Layer Routing)
 - [ ] 🔜 Triton/CUDA 内核加速
-- [ ] 🔜 GitHub Actions CI/CD
+- [x] GitHub Actions CI/CD
 - [ ] 🔜 Gradio/Streamlit 在线 Demo
 
 ---
@@ -274,7 +278,7 @@ If EigenTruth is helpful for your research, please consider citing:
 
 ```bibtex
 @software{eigentruth2025,
-  title   = {EigenTruth: Geometric Hallucination Governance for LLMs},
+  title   = {EigenTruth: Geometric Representation Monitoring and Steering for LLMs},
   author  = {EigenTruth Team},
   year    = {2025},
   url     = {https://github.com/catamitez0-maker/EigenTruth},

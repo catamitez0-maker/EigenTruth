@@ -6,18 +6,16 @@
 
 import math
 
-import pytest
 import torch
 
 from eigentruth.core.math_engine import (
     TruthManifold,
+    _poincare_distance,
     hyperbolic_semantic_entropy,
     mahalanobis_distance,
     poincare_map,
     sherman_morrison_update,
-    _poincare_distance,
 )
-
 
 # ===================================================================
 # Sherman-Morrison Update
@@ -41,10 +39,7 @@ class TestShermanMorrisonUpdate:
         n_samples = 20
         torch.manual_seed(42)
 
-        # 收集样本，计算真实协方差逆
         samples = torch.randn(n_samples, d)
-        cov = (samples.T @ samples) / n_samples + 1e-4 * torch.eye(d)
-        expected_inv = torch.linalg.inv(cov)
 
         # Sherman-Morrison 逐步更新
         cov_inv = torch.eye(d, dtype=torch.float32)
@@ -406,4 +401,3 @@ class TestTruthManifold:
         assert m2.contrastive_direction is not None
         assert torch.allclose(m2.false_mean, m.false_mean)
         assert torch.allclose(m2.contrastive_direction, m.contrastive_direction)
-

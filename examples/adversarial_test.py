@@ -4,8 +4,10 @@ Adversarial Test — Compare outputs with/without EigenTruth on tricky prompts
 
 import logging
 import sys
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from eigentruth import EigenTruthWrapper
 
 
@@ -116,9 +118,9 @@ def main():
         print(f"  ⚠️  WITHOUT EigenTruth: {gen_unsafe}")
         print(f"  📊 Mahalanobis: {dist:.2f} | HSE: {hse:.2f}")
         if gen_safe != gen_unsafe:
-            print(f"  🔀 OUTPUT DIFFERS — EigenTruth intervention detected!")
+            print("  🔀 OUTPUT DIFFERS — EigenTruth intervention detected!")
         else:
-            print(f"  ✅ Same output (model was already correct)")
+            print("  ✅ Same output (model was already correct)")
 
     print(f"\n{'=' * 70}")
     print("  TEST COMPLETE")

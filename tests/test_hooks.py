@@ -10,7 +10,6 @@ import torch.nn as nn
 from eigentruth.core.math_engine import TruthManifold
 from eigentruth.intervention.hooks import TruthProbe
 
-
 # ===================================================================
 # 测试用 Mock 模型
 # ===================================================================
@@ -173,11 +172,11 @@ class TestHookFunctionality:
         # 阈值设为 100，只会拦截 x[1]
         probe_on = TruthProbe(manifold, threshold=100.0, steering_lambda=1.0)
         probe_on.register(model, layer_idx=-1)
-        
+
         with torch.no_grad():
             out_on = model(x).clone()
             probe_on.remove()
-            
+
             # 再不带 probe 跑一遍
             out_off = model(x).clone()
 
@@ -234,7 +233,6 @@ class TestOutputFormatHandling:
 
     def test_plain_tensor_output(self):
         """hook 处理纯 Tensor 输出的层。"""
-        layer = MockTransformerLayerPlain(32)
         manifold = _build_manifold(32)
         probe = TruthProbe(manifold, threshold=1e10)
 
@@ -331,7 +329,7 @@ class TestSteeringVector:
         steering = probe._compute_steering_vector(h)
 
         expected_dir = torch.ones(32) / torch.norm(torch.ones(32))
-        
+
         cos_sim = torch.sum(steering.to(torch.float32) * expected_dir.unsqueeze(0), dim=-1)
         assert torch.all(cos_sim > 0.99)
 

@@ -4,16 +4,12 @@
 覆盖：初始化、warmup 流形构建、generate 流程、HSE 预警、诊断信息。
 """
 
-import logging
 from unittest.mock import MagicMock, patch
-from typing import Any
 
-import pytest
 import torch
 import torch.nn as nn
 
 from eigentruth.models.wrapper import EigenTruthWrapper
-
 
 # ===================================================================
 # Mock 基础设施
@@ -225,7 +221,7 @@ class TestHSEWarning:
         tokenizer = MockTokenizer()
         wrapper.warmup(["事实一", "事实二", "事实三"], tokenizer)
 
-        with patch("eigentruth.models.wrapper.logger") as mock_logger:
+        with patch("eigentruth.models.wrapper.logger"):
             input_ids = torch.randint(0, 100, (1, 5))
             wrapper.generate(input_ids=input_ids, max_new_tokens=5)
             # 验证不抛异常即可（HSE 是否触发取决于随机输出）
