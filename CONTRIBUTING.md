@@ -81,7 +81,7 @@ Common types include `feat`, `fix`, `docs`, `test`, `refactor`, and `ci`.
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/catamitez0-maker/EigenTruth/issues) for reproducible bugs, documentation gaps, feature proposals, and experiment-quality improvements.
+Use [GitHub Issues](https://github.com/catamitez0-maker/EigenTruth/issues) for reproducible bugs, documentation gaps, feature proposals, and improvements to experiment quality.
 
 Include:
 

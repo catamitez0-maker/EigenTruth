@@ -6,7 +6,7 @@ The scripts in this directory are qualitative research demonstrations. They are 
 
 ### `qwen_truth_demo.py`
 
-A minimal end-to-end demonstration using `Qwen/Qwen2.5-0.5B-Instruct`. It loads a model, builds a small factual and false warmup set, generates with experimental steering enabled, prints diagnostics, detaches the probe, and generates again for comparison.
+A minimal end-to-end demonstration using `Qwen/Qwen2.5-0.5B-Instruct`. It loads a model, builds small factual and false warmup sets, generates with experimental steering enabled, prints diagnostics, detaches the probe, and generates again for comparison.
 
 ### `adversarial_test.py`
 
@@ -21,7 +21,7 @@ python -m pip install -e .[dev]
 python examples/qwen_truth_demo.py
 ```
 
-The examples may download model weights from Hugging Face. Review model licenses, download size, and any remote-code requirements before running a new model.
+The examples may download model weights from Hugging Face. Review model licenses, download sizes, and any requirements for remote code before running a new model.
 
 ## Structure For New Example Scripts
 
@@ -30,7 +30,7 @@ New examples should be easy to inspect and reproduce. Keep this sequence explici
 1. State the research question and limitations in the module docstring.
 2. Define the model identifier and, when available, the exact model revision.
 3. Set deterministic seeds when sampling or randomized data is involved.
-4. Declare warmup dataset provenance and keep factual and false examples visible or linked.
+4. Declare warmup dataset provenance and include or link the factual and false examples.
 5. Record target layer, thresholds, steering strength, and generation arguments.
 6. Separate monitor-only and steering-enabled runs clearly.
 7. Print or save diagnostics alongside generated output.

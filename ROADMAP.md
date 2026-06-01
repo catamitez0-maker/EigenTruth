@@ -38,7 +38,7 @@ EigenTruth is an alpha-stage research preview. This roadmap focuses on making ex
 
 - Review dependency constraints and supported PyTorch and Transformers versions.
 - Add routine dependency vulnerability checks.
-- Review model-loading and experiment-script guidance for untrusted inputs and remote code.
+- Review guidance for model loading and experiment scripts that handle untrusted inputs or remote code.
 
 ## Longer-Term Research Directions
 

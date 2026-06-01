@@ -18,7 +18,7 @@ Please allow maintainers time to investigate and coordinate disclosure before pu
 Security reports may include:
 
 - vulnerabilities in EigenTruth source code
-- unsafe handling of files, configuration, or model-loading inputs
+- unsafe handling of files, configuration values, or inputs used during model loading
 - dependency vulnerabilities with a concrete impact on this project
 - documentation that encourages unsafe execution of untrusted code or artifacts
 
