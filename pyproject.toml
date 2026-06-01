@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eigentruth"
 version = "0.1.0"
-description = "EigenTruth — 基于几何动力学与表征工程(RepE)的大模型幻觉治理 PyTorch 工具库"
+description = "Alpha research-preview PyTorch toolkit for LLM representation monitoring, geometric drift diagnostics, and experimental activation steering / 面向大模型表征监测、几何漂移诊断与实验性激活引导的 PyTorch 研究预览工具库"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
