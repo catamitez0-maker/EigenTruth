@@ -32,7 +32,7 @@ EigenTruth wraps a decoder-only language model with PyTorch hooks. It can:
 
 - build a `TruthManifold` from factual warmup examples
 - track Mahalanobis-style distance from that warmup manifold
-- project hidden states into a Poincare ball and calculate Hyperbolic Semantic Entropy (HSE)
+- project hidden states into a Poincare ball and compute Hyperbolic Semantic Entropy (HSE)
 - optionally build a contrastive direction from factual and false examples
 - optionally apply experimental activation steering when a configured threshold is exceeded
 
@@ -101,14 +101,14 @@ target-layer hidden states ---> TruthManifold
 generation hidden states -------------+
         |
         +--> distance diagnostic
-        +--> Poincare projection --> HSE diagnostic
+        +--> Poincare-ball projection --> HSE diagnostic
         +--> optional threshold-triggered steering --> model generation
 ```
 
 The high-level workflow is:
 
 1. **Warm up**: collect final-token hidden states from factual texts and optionally false texts.
-2. **Build diagnostics**: incrementally construct a regularized precision proxy and optional contrastive direction.
+2. **Build diagnostics**: incrementally construct a regularized precision proxy and an optional contrastive direction.
 3. **Attach a hook**: register a `forward_hook` on a selected Transformer layer.
 4. **Monitor**: calculate representation-distance and HSE diagnostics during generation.
 5. **Experiment with steering**: optionally inject a normalized steering vector after a configured threshold is exceeded.
@@ -127,7 +127,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the mathematical framing, c
 
 | Component | Purpose |
 |---|---|
-| `TruthManifold` | Maintains an online mean and Sherman-Morrison regularized precision proxy. |
+| `TruthManifold` | Maintains an online mean and a regularized precision proxy using Sherman-Morrison updates. |
 | `mahalanobis_distance` | Measures relative deviation from the warmup manifold. |
 | `poincare_map` | Projects representations into a bounded hyperbolic space. |
 | `hyperbolic_semantic_entropy` | Measures dispersion over a sliding window of projected states. |
@@ -147,7 +147,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the mathematical framing, c
 
 ## Experimental Model Compatibility
 
-The hook layer resolver includes paths commonly used by several Hugging Face model families. Compatibility varies by architecture version and should be verified with a small warmup run before conducting an experiment.
+The hook layer resolver includes paths commonly used by several Hugging Face model families. Compatibility may vary by model and architecture version and should be verified with a small warmup run before conducting an experiment.
 
 Hook 层解析器包含若干 Hugging Face 模型系列常用的路径。兼容性会随架构版本变化，正式实验前应通过小规模 warmup 运行进行验证。
 
