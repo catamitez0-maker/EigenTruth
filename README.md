@@ -1,284 +1,235 @@
 <div align="center">
 
-# 🌌 EigenTruth
+# EigenTruth
 
-**基于几何动力学的大模型表征监测与干预实验框架**
-**Research toolkit for LLM representation monitoring and intervention via geometric dynamics**
+**Research-preview PyTorch toolkit for LLM representation monitoring, geometric drift diagnostics, and experimental activation steering**
 
-[![Status: Research Preview](https://img.shields.io/badge/Status-Research_Preview-yellow.svg)]()
-[![Framework: PyTorch](https://img.shields.io/badge/Framework-PyTorch_2.0+-ee4c2c.svg)](https://pytorch.org)
-[![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace_Compatible-yellow.svg)](https://huggingface.co)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://python.org)
-[![Tests: 74 passed](https://img.shields.io/badge/Tests-74%20passed-brightgreen.svg)]()
-[![Lint: ruff](https://img.shields.io/badge/Lint-ruff%20passed-brightgreen.svg)]()
+**面向大模型表征监测、几何漂移诊断与实验性激活引导的 PyTorch 研究预览工具库**
 
-> *"幻觉不是知识的缺失，而是表征流向的几何偏离。"*
-> *"Hallucination is not an absence of knowledge, but a geometric deviation of representational flow."*
+[![Status: Research Preview](https://img.shields.io/badge/status-alpha%20research%20preview-yellow.svg)]()
+[![CI](https://github.com/catamitez0-maker/EigenTruth/actions/workflows/ci.yml/badge.svg)](https://github.com/catamitez0-maker/EigenTruth/actions/workflows/ci.yml)
+[![Framework: PyTorch](https://img.shields.io/badge/framework-PyTorch%202.0%2B-ee4c2c.svg)](https://pytorch.org)
+[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://python.org)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[快速开始 / Quick Start](#-快速开始--quick-start) · [方法 / Methodology](docs/methodology.md) · [架构 / Architecture](#-系统架构--architecture) · [实验结果 / Experiments](#-对抗性实验--adversarial-experiment) · [贡献 / Contributing](CONTRIBUTING.md)
+[Quick start](#quick-start) | [Architecture](#architecture) | [Methodology](docs/methodology.md) | [Examples](examples/README.md) | [Roadmap](ROADMAP.md) | [Contributing](CONTRIBUTING.md) | [Security](SECURITY.md)
 
 </div>
 
----
+## Research Preview
 
-## 💡 什么是 EigenTruth？ / What is EigenTruth?
+EigenTruth is an alpha-stage research toolkit. It is intended for controlled experiments, diagnostics, and reproducible exploration. It is not production-ready, does not prove that an output is true, and must not be treated as a safety boundary for deployed systems.
 
-**EigenTruth** 是一个基于**表征工程 (RepE)** 与**双曲几何**的 PyTorch 研究工具库，用于实验性地监测大模型 hidden states 的几何偏移，并探索 activation steering 对幻觉诱导 prompt 的影响。
+EigenTruth 是一个处于 alpha 阶段的研究预览工具库，适用于受控实验、诊断和可复现探索。它尚未达到生产可用状态，不能证明模型输出为真，也不能作为已部署系统的安全边界。
 
-**EigenTruth** is a PyTorch research toolkit based on **Representation Engineering (RepE)** and **Hyperbolic Geometry**. It monitors geometric deviations in LLM hidden states and explores activation steering as an experimental intervention mechanism.
+The current implementation explores a research hypothesis: hallucination-related generation behavior may sometimes be accompanied by measurable geometric drift in hidden-state representations. The signals exposed by this project are experimental diagnostics, not calibrated factuality scores.
 
-```
-✅ 不修改模型权重 / No weight modification
-✅ 不需要微调 / No fine-tuning required
-✅ 即插即用 / Plug-and-play like PEFT
-✅ 适合实验与原型验证 / Suitable for experiments and prototypes
-```
+当前实现探索一个研究假设：与幻觉相关的生成行为有时可能伴随隐藏状态表征中可测量的几何漂移。本项目提供的信号属于实验性诊断指标，不是经过校准的事实性评分。
 
-> EigenTruth is not a production safety guarantee. It does not prove that an output is true.
-> It provides diagnostics and steering hooks for research on hallucination-related representation drift.
+## What EigenTruth Does
 
----
+EigenTruth wraps a decoder-only language model with PyTorch hooks. It can:
 
-## ✨ 核心特性 / Core Features
+- build a `TruthManifold` from factual warmup examples
+- track Mahalanobis-style distance from that warmup manifold
+- project hidden states into a Poincare ball and calculate Hyperbolic Semantic Entropy (HSE)
+- optionally build a contrastive direction from factual and false examples
+- optionally apply experimental activation steering when a configured threshold is exceeded
 
-| | 特性 / Feature | 描述 / Description |
-|---|---|---|
-| 🔬 | **Sherman-Morrison 在线更新** | 增量构建正则化 precision proxy，O(d²) 复杂度，无需全量求逆 |
-| | **Sherman-Morrison Online Update** | *Incremental regularized precision proxy, O(d²) complexity, no full inversion needed* |
-| 📏 | **马氏距离实时监测** | 逐 token 检测隐状态偏离真值流形的程度 |
-| | **Mahalanobis Distance Monitoring** | *Per-token detection of hidden state deviation from truth manifold* |
-| 🌀 | **庞加莱球映射** | 将高维表征投射到双曲空间，捕捉层次化语义结构 |
-| | **Poincaré Ball Mapping** | *Project representations into hyperbolic space for hierarchical semantics* |
-| 📊 | **双曲语义熵 (HSE)** | 滑动窗口量化生成过程中的语义发散程度 |
-| | **Hyperbolic Semantic Entropy** | *Sliding window quantification of semantic divergence during generation* |
-| 🎯 | **对比式引导** | 基于真值/谬误质心差分，自动注入修正向量 |
-| | **Contrastive Steering** | *Auto-inject correction vectors based on truth/false centroid differential* |
-| 🛡️ | **数值稳定** | FP32 内部计算、epsilon 正则、动态 Batch 安全 |
-| | **Numerical Stability** | *FP32 internals, epsilon regularization, dynamic batch-safe* |
+EigenTruth 通过 PyTorch hook 包装 decoder-only 语言模型。它可以：
 
----
+- 使用事实性 warmup 样本构建 `TruthManifold`
+- 跟踪隐藏状态相对于 warmup 流形的马氏距离风格指标
+- 将隐藏状态投影到庞加莱球并计算双曲语义熵（HSE）
+- 可选地使用事实与错误样本构建对比方向
+- 可选地在超过配置阈值时执行实验性激活引导
 
-## 🏗️ 系统架构 / Architecture
+### What It Does Not Do
 
-```
-                        EigenTruth Pipeline
-                        ═══════════════════
+EigenTruth does not guarantee factual correctness, eliminate hallucinations, validate model safety, or replace external evaluation. Steering can change generation without improving truthfulness. Thresholds must be calibrated for each model, layer, dataset, and experiment.
 
-  ┌──────────┐     ┌───────────────┐     ┌──────────────┐
-  │  LLM     │────▶│ Poincaré Ball │────▶│ Mahalanobis  │
-  │  Hidden  │     │   Mapping     │     │  Distance    │
-  │  States  │     │               │     │  Check       │
-  └──────────┘     └───────────────┘     └──────┬───────┘
-                                                │
-                          ┌─────────────────────┼─────────────────────┐
-                          │                     │                     │
-                          ▼                     ▼                     ▼
-                   ┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-                   │ Monitor     │    │ ⚠️ HSE       │    │ 🔧 Steering  │
-                   │   Output    │    │   Warning    │    │   Correction │
-                   │ (d < θ)     │    │ (entropy↑)   │    │ (d > θ)      │
-                   └─────────────┘    └──────────────┘    └──────┬───────┘
-                                                                 │
-                                                                 ▼
-                                                          ┌─────────────┐
-                                                          │ Inject      │
-                                                          │ Steering    │
-                                                          │ Vector      │──▶ back to LLM
-                                                          └─────────────┘
-```
+EigenTruth 不能保证事实正确性，不能消除幻觉，不能验证模型安全性，也不能替代外部评估。激活引导可能改变生成结果，但不一定提升真实性。阈值必须针对每个模型、层、数据集和实验单独校准。
 
-**工作流程 / Workflow:**
+## Quick Start
 
-1. **Warmup** — 用事实语料构建真值流形 (Truth Manifold)，可选地用错误语料构建对比方向
-2. **Hook** — 在目标 Transformer 层注册 `forward_hook`，拦截隐状态
-3. **Monitor** — 计算马氏距离 + 庞加莱映射 + HSE 滑动窗口
-4. **Steer** — 当距离超过阈值，可注入归一化引导向量进行实验性干预
-
----
-
-## 🚀 快速开始 / Quick Start
-
-### 安装 / Installation
+### Installation
 
 ```bash
-# 从 GitHub 安装 / Install from GitHub
 pip install git+https://github.com/catamitez0-maker/EigenTruth.git
+```
 
-# 开发模式 / Development mode
+For local development:
+
+```bash
 git clone https://github.com/catamitez0-maker/EigenTruth.git
 cd EigenTruth
-pip install -e .[dev]
+python -m venv .venv
+# POSIX:   source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+python -m pip install -e .[dev]
 ```
 
-### 最小接入 / Minimal Integration
+### Minimal Integration
 
 ```python
 from eigentruth import EigenTruthWrapper
 
-safe = EigenTruthWrapper(model, target_layer_idx=-8, steering_lambda=0.5)
-safe.warmup(fact_dataset, tokenizer, false_dataset=false_dataset)
-output = safe.generate(**inputs, max_new_tokens=50)
-```
-
-### 完整示例 / Full Example
-
-```python
-import logging
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from eigentruth import EigenTruthWrapper
-
-# 配置日志 / Configure logging
-logging.getLogger("eigentruth").addHandler(logging.StreamHandler())
-logging.getLogger("eigentruth").setLevel(logging.INFO)
-
-# 1. 加载模型 / Load model
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
-
-# 2. 包装 EigenTruth / Wrap with EigenTruth
-safe_model = EigenTruthWrapper(
+monitor = EigenTruthWrapper(
     model=model,
-    target_layer_idx=-8,      # 倒数第 8 层 / 8th layer from end
-    steering_lambda=0.5,       # 引导强度 / Steering strength
-    mahalanobis_threshold=5.0, # 距离阈值 / Distance threshold
+    target_layer_idx=-8,
+    steering_lambda=0.0,  # monitor-only mode
 )
-
-# 3. 构建真值流形 / Build truth manifold
-facts  = ["The capital of France is Paris.", "Water boils at 100°C."]
-falses = ["The capital of France is Berlin.", "Water boils at 50°C."]
-safe_model.warmup(facts, tokenizer, false_dataset=falses)
-
-# 4. 受控生成 / Controlled generation
-inputs = tokenizer("Tell me: the capital of France is", return_tensors="pt")
-output = safe_model.generate(**inputs, max_new_tokens=20, do_sample=False)
-print(tokenizer.decode(output[0], skip_special_tokens=True))
-
-# 5. 查看诊断 / View diagnostics
-print(safe_model.get_diagnostics())
+monitor.warmup(fact_dataset, tokenizer)
+output = monitor.generate(**inputs, max_new_tokens=50)
+print(monitor.get_diagnostics())
 ```
 
----
+Start with `steering_lambda=0.0` to inspect diagnostics without modifying activations. Enable non-zero steering only for explicit intervention experiments.
 
-## 📊 对抗性实验 / Adversarial Experiment
+建议先使用 `steering_lambda=0.0`，在不修改激活值的情况下检查诊断结果。仅在明确的干预实验中启用非零引导强度。
 
-以下结果来自一个小规模演示脚本，不是标准化基准。它用于展示 EigenTruth 在特定模型、样本和阈值下可能改变生成轨迹。
+For a runnable model-loading demo, see [`examples/qwen_truth_demo.py`](examples/qwen_truth_demo.py). Example scripts may download model weights and are demonstrations rather than benchmarks. See [`examples/README.md`](examples/README.md) before adding or interpreting experiments.
 
-The following is a small demonstration, not a benchmark claim. It shows that EigenTruth can change generation trajectories under a particular model, warmup set, and threshold configuration.
+## Architecture
 
-| # | 对抗 Prompt | 🛡️ EigenTruth | ⚠️ Unprotected | 距离 | HSE |
-|---|---|---|---|---|---|
-| 1 | *"澳大利亚首都是悉尼"* | ✅ 否定错误前提 | ❌ 附和错误 | 20.8 | 7.2 |
-| 2 | *"太阳绕地球转"* | — 相同 — | — 相同 — | 14.9 | 7.2 |
-| 3 | *"水在200度结冰"* | ✅ 修改措辞 | ❌ 原始措辞 | 23.2 | 7.2 |
-| 4 | *"爱因斯坦发明互联网"* | ✅ **主动纠正谬误** | ❌ 回避前提 | 20.7 | 7.2 |
-| 5 | *"1+1=3"* | — 相同 — | — 相同 — | 24.6 | 7.2 |
+```text
+factual warmup texts
+        |
+        v
+target-layer hidden states ---> TruthManifold
+                                      |
+generation hidden states -------------+
+        |
+        +--> distance diagnostic
+        +--> Poincare projection --> HSE diagnostic
+        +--> optional threshold-triggered steering --> model generation
+```
 
-**Observed intervention difference: 60% (3/5)** in this demonstration setup.
+The high-level workflow is:
 
-> 💡 **最佳案例 / Best Case**: Prompt #4 "爱因斯坦发明了互联网"
-> - 🛡️ WITH: *"He didn't invent the internet because he did not have any idea about it"*
-> - ⚠️ WITHOUT: *"Einstein's work on relativity theory is one of his most famous achievements"* (回避)
+1. **Warm up**: collect final-token hidden states from factual texts and optionally false texts.
+2. **Build diagnostics**: incrementally construct a regularized precision proxy and optional contrastive direction.
+3. **Attach a hook**: register a `forward_hook` on a selected Transformer layer.
+4. **Monitor**: calculate representation-distance and HSE diagnostics during generation.
+5. **Experiment with steering**: optionally inject a normalized steering vector after a configured threshold is exceeded.
 
----
+工作流程：
 
-## 🧩 支持的模型 / Supported Models
+1. **Warmup**：从事实文本和可选的错误文本中收集最后一个 token 的隐藏状态。
+2. **构建诊断**：增量构建正则化 precision proxy 和可选的对比方向。
+3. **挂载 Hook**：在选定的 Transformer 层注册 `forward_hook`。
+4. **监测**：在生成期间计算表征距离和 HSE 诊断指标。
+5. **实验性引导**：可选地在超过配置阈值后注入归一化引导向量。
 
-EigenTruth 通过自动探测 Transformer 层路径支持主流 HF 模型架构：
+See [`docs/methodology.md`](docs/methodology.md) for the mathematical framing, calibration guidance, and limitations.
 
-| 架构 / Architecture | 模型 / Models | 层路径 / Layer Path |
+## Core Components
+
+| Component | Purpose |
+|---|---|
+| `TruthManifold` | Maintains an online mean and Sherman-Morrison regularized precision proxy. |
+| `mahalanobis_distance` | Measures relative deviation from the warmup manifold. |
+| `poincare_map` | Projects representations into a bounded hyperbolic space. |
+| `hyperbolic_semantic_entropy` | Measures dispersion over a sliding window of projected states. |
+| `TruthProbe` | Captures selected-layer hidden states and optionally applies steering. |
+| `EigenTruthWrapper` | Provides warmup, generation passthrough, diagnostics, and probe lifecycle management. |
+
+### 主要组件
+
+| 组件 | 用途 |
+|---|---|
+| `TruthManifold` | 维护在线均值和 Sherman-Morrison 正则化 precision proxy。 |
+| `mahalanobis_distance` | 测量相对于 warmup 流形的相对偏移。 |
+| `poincare_map` | 将表征投影到有界双曲空间。 |
+| `hyperbolic_semantic_entropy` | 测量投影状态滑动窗口内的离散程度。 |
+| `TruthProbe` | 捕获指定层的隐藏状态，并可选地应用激活引导。 |
+| `EigenTruthWrapper` | 提供 warmup、生成透传、诊断信息和探针生命周期管理。 |
+
+## Experimental Model Compatibility
+
+The hook layer resolver includes paths commonly used by several Hugging Face model families. Compatibility varies by architecture version and should be verified with a small warmup run before conducting an experiment.
+
+Hook 层解析器包含若干 Hugging Face 模型系列常用的路径。兼容性会随架构版本变化，正式实验前应通过小规模 warmup 运行进行验证。
+
+| Architecture family | Example models | Candidate layer path |
 |---|---|---|
-| **Llama** | Llama 2/3, CodeLlama | `model.model.layers` |
-| **Qwen** | Qwen2, Qwen2.5 | `model.model.layers` |
-| **Mistral** | Mistral, Mixtral | `model.model.layers` |
-| **GPT-2** | GPT-2, GPT-Neo | `model.transformer.h` |
-| **GPT-NeoX** | Pythia, GPT-NeoX | `model.gpt_neox.layers` |
-| **OPT** | OPT | `model.model.decoder.layers` |
-| **自定义 / Custom** | 任何模型 | `custom_layer_path="your.path"` |
+| Llama-style | Llama, Qwen, Mistral | `model.model.layers` |
+| GPT-2-style | GPT-2, GPT-Neo | `model.transformer.h` |
+| GPT-NeoX-style | Pythia, GPT-NeoX | `model.gpt_neox.layers` |
+| OPT-style | OPT | `model.model.decoder.layers` |
+| Custom | Other compatible models | `custom_layer_path="your.path"` |
 
----
+This table describes resolver support, not a guarantee that every listed model release has been validated.
 
-## ⚙️ 参数说明 / Parameters
+## Qualitative Demonstration
 
-```python
-EigenTruthWrapper(
-    model,                         # HuggingFace CausalLM 模型
-    target_layer_idx=-10,          # 目标层索引（支持负索引）
-    steering_lambda=0.1,           # 引导强度 (0=纯监测, 1=强纠偏)
-    mahalanobis_threshold=15.0,    # 马氏距离阈值
-    hse_warning_threshold=5.0,     # HSE 预警阈值
-    curvature=1.0,                 # 庞加莱球曲率
-    hse_window_size=20,            # HSE 滑动窗口大小
-    custom_layer_path=None,        # 自定义层路径
-)
-```
+[`examples/adversarial_test.py`](examples/adversarial_test.py) compares outputs with and without steering for a small set of prompts. The results are qualitative demonstrations under a specific model, warmup set, target layer, threshold, and generation configuration.
 
-> `mahalanobis_threshold` is experiment-specific. Calibrate it per model,
-> target layer, warmup set, and generation setup; it is not a portable factuality
-> score.
+[`examples/adversarial_test.py`](examples/adversarial_test.py) 在一个小规模 prompt 集合上比较启用和禁用激活引导时的输出。结果仅是在特定模型、warmup 集合、目标层、阈值和生成配置下的定性演示。
 
----
+Do not interpret output changes as benchmark evidence or as proof that a correction is factually valid. Any research claim should use reproducible scripts, external evaluation, and human review.
 
-## 🧪 测试 / Testing
+不要将输出变化解释为基准测试证据，也不要将其视为纠正结果具有事实有效性的证明。任何研究结论都应使用可复现实验脚本、外部评估和人工审查。
+
+## Testing
 
 ```bash
-# 运行全部测试 / Run all tests
-pytest tests/ -v
-
-# 代码检查 / Lint check
-ruff check src tests examples
-
-# 当前状态: 74 passed
+python -m pytest tests/ -v
+python -m ruff check src tests examples
 ```
 
----
+The unit suite covers numerical stability, hook behavior, warmup, diagnostics, and wrapper lifecycle. It does not replace evaluation against factuality benchmarks or model-specific integration testing.
 
-## 📁 项目结构 / Project Structure
+单元测试覆盖数值稳定性、hook 行为、warmup、诊断信息和 wrapper 生命周期。它不能替代事实性基准测试或针对具体模型的集成测试。
 
-```
+## Maintainer Workflow
+
+For routine changes:
+
+1. Create a focused branch.
+2. Make the smallest coherent change.
+3. Add or update tests for behavior changes.
+4. Run `python -m pytest tests/ -v`.
+5. Run `python -m ruff check src tests examples`.
+6. Update documentation when experiment assumptions, interfaces, or limitations change.
+7. Open a pull request with the motivation, validation steps, and any research caveats.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the complete contributor workflow and [`ROADMAP.md`](ROADMAP.md) for near-term priorities.
+
+## How Codex Helps Maintain This Project
+
+Codex can help maintainers inspect the repository, propose scoped changes, add tests, improve documentation, run local checks, review diffs, and prepare pull requests. For this research-preview project, Codex should support human review rather than replace it.
+
+When using Codex on EigenTruth:
+
+- keep changes narrow and reviewable
+- preserve honest research-preview language
+- run tests and lint before publishing
+- document assumptions for experiment scripts
+- avoid turning qualitative observations into safety or benchmark claims
+- require maintainer review before merge
+
+Codex 可以帮助维护者检查仓库、提出范围明确的改动、补充测试、改进文档、运行本地检查、审阅 diff 并准备 pull request。对于这个研究预览项目，Codex 应当支持人工审查，而不是替代人工审查。
+
+## Repository Layout
+
+```text
 EigenTruth/
-├── src/eigentruth/
-│   ├── core/
-│   │   └── math_engine.py       # 几何核心: Sherman-Morrison, 马氏距离, 庞加莱映射, HSE
-│   ├── intervention/
-│   │   └── hooks.py             # TruthProbe: forward_hook 动态探针系统
-│   ├── models/
-│   │   └── wrapper.py           # EigenTruthWrapper: 用户级 API
-│   └── __init__.py              # 公开 API 导出
-├── tests/                       # 74 个自动化测试
-├── examples/
-│   ├── qwen_truth_demo.py       # 基础 Demo
-│   └── adversarial_test.py      # 对抗性测试
-├── pyproject.toml
-├── README.md
-├── CONTRIBUTING.md
-└── LICENSE
+|-- src/eigentruth/
+|   |-- core/math_engine.py       # geometry and online manifold updates
+|   |-- intervention/hooks.py     # hook-based diagnostics and steering
+|   `-- models/wrapper.py         # user-facing wrapper
+|-- tests/                        # unit tests
+|-- examples/                     # qualitative demonstration scripts
+|-- docs/methodology.md           # research framing and limitations
+|-- ROADMAP.md
+|-- CONTRIBUTING.md
+`-- SECURITY.md
 ```
 
----
+## Citation
 
-## 🗺️ 路线图 / Roadmap
-
-- [x] 核心数学引擎 (Sherman-Morrison, Mahalanobis, Poincaré, HSE)
-- [x] 非侵入式 Hook 系统
-- [x] 对比式引导 (Contrastive Steering)
-- [x] 双语文档与注释
-- [x] 74 个自动化测试
-- [x] ruff lint 覆盖 src/tests/examples
-- [ ] 🔜 TruthfulQA / HaluEval 量化基准
-- [ ] 🔜 自动层探测 (Auto Layer Routing)
-- [ ] 🔜 Triton/CUDA 内核加速
-- [x] GitHub Actions CI/CD
-- [ ] 🔜 Gradio/Streamlit 在线 Demo
-
----
-
-## 📄 引用 / Citation
-
-如果 EigenTruth 对你的研究有帮助，欢迎引用：
-
-If EigenTruth is helpful for your research, please consider citing:
+If EigenTruth is useful for your research, cite the repository and include the commit SHA used for your experiment:
 
 ```bibtex
 @software{eigentruth2025,
@@ -290,18 +241,14 @@ If EigenTruth is helpful for your research, please consider citing:
 }
 ```
 
----
+如果 EigenTruth 对你的研究有帮助，请引用本仓库，并在实验记录中包含所使用的 commit SHA。
 
-## 🤝 贡献 / Contributing
+## Contributing And Security
 
-欢迎所有形式的贡献！请参阅 [CONTRIBUTING.md](CONTRIBUTING.md) 了解详情。
+Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. For security-sensitive reports, follow [`SECURITY.md`](SECURITY.md) and avoid filing public issues until a disclosure path has been agreed.
 
-Contributions of all kinds are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+欢迎贡献。提交 pull request 前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。对于安全敏感问题，请遵循 [`SECURITY.md`](SECURITY.md)，并在确认披露流程前避免创建公开 issue。
 
----
+## License
 
-<div align="center">
-
-**Apache License 2.0** · Made with 🧮 math and ❤️ by the EigenTruth Team
-
-</div>
+Apache License 2.0. See [`LICENSE`](LICENSE).
