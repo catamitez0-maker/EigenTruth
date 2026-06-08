@@ -74,11 +74,13 @@ def main():
     ]
 
     # ---- 构建 EigenTruth 包装器 ----
+    # steering_lambda 为"相对激活范数的移动比例"：0.15 ≈ 移动激活范数的 15%（较强但不至破坏连贯性）。
+    # steering_lambda is a fraction of the activation norm (0.15 ≈ 15%): strong but not incoherent.
     safe_model = EigenTruthWrapper(
         model=model,
         target_layer_idx=-8,
-        steering_lambda=0.8,        # 较强干预
-        mahalanobis_threshold=3.0,   # 较低阈值，更容易触发
+        steering_lambda=0.15,        # 较强干预 / relatively strong
+        mahalanobis_threshold=3.0,   # 需按模型/层校准 / calibrate per model/layer
     )
 
     print("🔬 Warming up EigenTruth with 15 fact/false pairs...")

@@ -416,3 +416,94 @@ class TestTruthManifold:
         assert m2.contrastive_direction is not None
         assert torch.allclose(m2.false_mean, m.false_mean)
         assert torch.allclose(m2.contrastive_direction, m.contrastive_direction)
+
+
+# ===================================================================
+# 距离尺度稳定性 (Fix: 马氏距离不随 warmup 样本数塌缩)
+# ===================================================================
+
+class TestDistanceScaleStability:
+    """马氏距离尺度应在不同 warmup 样本数下保持稳定。
+
+    旧实现的 cov_inv 是 (I + 散布矩阵)⁻¹，散布矩阵 ∝ n，导致距离 ∝ 1/√n，
+    阈值因此依赖于 warmup 集大小。新实现按样本数归一化样本协方差，尺度稳定。
+    """
+
+    def _dists_by_n(self, ns):
+        torch.manual_seed(123)
+        d = 48
+        center = torch.ones(d) * 2.0
+        stream = center + torch.randn(5000, d) * 1.5
+        probe = center + torch.randn(d) * 1.5  # in-distribution 测试点
+        out = {}
+        for n in ns:
+            m = TruthManifold()
+            for i in range(n):
+                m.update(stream[i])
+            out[n] = mahalanobis_distance(probe, m.mean, m.cov_inv).item()
+        return out
+
+    def test_scale_stable_across_warmup_size(self):
+        """同一 in-dist 点在 n=100..1000 间距离保持同量级（不塌缩）。"""
+        d = self._dists_by_n([100, 200, 500, 1000])
+        vals = list(d.values())
+        # 旧实现（散布矩阵逆）在此范围约 √10 ≈ 3.2× 塌缩；新实现应远小于此。
+        assert max(vals) / min(vals) < 2.2
+
+    def test_distance_does_not_collapse_with_more_samples(self):
+        """大样本距离不应是小样本距离的极小比例（旧 1/√n 病态）。"""
+        d = self._dists_by_n([100, 1000])
+        # 旧实现: d[1000] ≈ d[100]/√10 ≈ 0.32×；新实现应保持同量级。
+        assert d[1000] > 0.5 * d[100]
+
+
+# ===================================================================
+# Ridge 正则化 (Fix: n<dim 与退化协方差下的可逆性)
+# ===================================================================
+
+class TestRidgeRegularization:
+    """固定相对 ridge 保证精度矩阵在小样本/退化情形下仍有限可逆。"""
+
+    def test_cov_inv_prior_for_small_n(self):
+        """n=0 返回 None；n=1 返回单位阵作为先验精度。"""
+        m = TruthManifold()
+        assert m.cov_inv is None  # 无样本
+        m.update(torch.randn(8))
+        assert m.n == 1
+        assert torch.allclose(m.cov_inv, torch.eye(8))  # 单样本 → 单位先验
+
+    def test_precision_invertible_when_n_less_than_dim(self):
+        """n < hidden_dim（散布矩阵秩亏）时精度矩阵仍有限、对称、可用。"""
+        torch.manual_seed(0)
+        d = 64
+        m = TruthManifold()
+        for _ in range(5):  # n=5 < d=64
+            m.update(torch.randn(d))
+        cov_inv = m.cov_inv
+        assert cov_inv.shape == (d, d)
+        assert torch.isfinite(cov_inv).all()
+        assert torch.allclose(cov_inv, cov_inv.T, atol=1e-4)
+        dist = mahalanobis_distance(torch.randn(d), m.mean, cov_inv)
+        assert torch.isfinite(dist).all()
+
+    def test_identical_samples_finite_distance(self):
+        """完全相同的样本（协方差≈0）不产生 NaN/Inf。"""
+        d = 32
+        m = TruthManifold()
+        for _ in range(8):
+            m.update(torch.ones(d) * 3.0)
+        dist = mahalanobis_distance(torch.ones(d) * 3.5, m.mean, m.cov_inv)
+        assert torch.isfinite(dist).all()
+
+    def test_cov_inv_recomputes_after_update(self):
+        """新样本后 cov_inv 缓存失效并重新计算。"""
+        torch.manual_seed(1)
+        d = 16
+        m = TruthManifold()
+        for _ in range(4):
+            m.update(torch.randn(d))
+        first = m.cov_inv.clone()
+        for _ in range(4):
+            m.update(torch.randn(d) * 5.0 + 10.0)
+        second = m.cov_inv
+        assert not torch.allclose(first, second)

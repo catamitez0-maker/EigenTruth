@@ -391,6 +391,70 @@ class TestSteeringVector:
 
 
 # ===================================================================
+# 引导量纲 (Fix: 修正量按激活范数缩放)
+# ===================================================================
+
+class TestSteeringMagnitude:
+    """注入的修正量应为激活范数的 steering_lambda 比例。
+
+    旧实现注入 (steering_lambda × 单位向量)，范数恒为 lambda(~0.x)，相对真实
+    激活范数(常为数十)仅约 1%，几乎无效。新实现按各样本激活范数缩放，使
+    steering_lambda 成为"相对激活范数的移动比例"，与模型/层无关。
+    """
+
+    def test_correction_is_fraction_of_activation_norm(self):
+        """修正量范数 ≈ lambda × 激活范数（而非旧版恒等于 lambda）。"""
+        model = MockModel(n_layers=4, hidden_dim=32)
+        manifold = _build_manifold(32)
+        x = torch.randn(1, 5, 32) * 3.0
+
+        # 基线：捕获 layer[-1] 最后一个 token 的激活范数（无引导）
+        captured = {}
+
+        def grab(module, inp, out):
+            captured["h"] = out[0][:, -1, :].clone()
+
+        gh = model.layers[-1].register_forward_hook(grab)
+        with torch.no_grad():
+            out_base = model(x).clone()
+        gh.remove()
+        act_norm = captured["h"].norm().item()
+
+        lam = 0.1
+        probe = TruthProbe(manifold, threshold=0.01, steering_lambda=lam)
+        probe.register(model, layer_idx=-1)
+        with torch.no_grad():
+            out_on = model(x).clone()
+        probe.remove()
+
+        corr_norm = (out_on[:, -1, :] - out_base[:, -1, :]).norm().item()
+        # 核心断言：修正量随激活范数缩放
+        assert corr_norm == pytest.approx(lam * act_norm, rel=0.05)
+        # 明确区别于旧的单位向量行为（旧版恒为 lam=0.1）
+        assert corr_norm > lam
+
+    def test_correction_scales_linearly_with_lambda(self):
+        """lambda 翻倍 → 修正量范数翻倍。"""
+        model = MockModel(n_layers=4, hidden_dim=32)
+        manifold = _build_manifold(32)
+        x = torch.randn(1, 5, 32) * 3.0
+
+        with torch.no_grad():
+            out_base = model(x).clone()
+
+        norms = {}
+        for lam in (0.1, 0.2):
+            probe = TruthProbe(manifold, threshold=0.01, steering_lambda=lam)
+            probe.register(model, layer_idx=-1)
+            with torch.no_grad():
+                out = model(x).clone()
+            probe.remove()
+            norms[lam] = (out[:, -1, :] - out_base[:, -1, :]).norm().item()
+
+        assert norms[0.2] == pytest.approx(2.0 * norms[0.1], rel=0.05)
+
+
+# ===================================================================
 # 层定位
 # ===================================================================
 

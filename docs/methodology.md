@@ -19,8 +19,9 @@ a steering vector toward a factual centroid or a contrastive truth direction.
 ## Pipeline
 
 1. Collect hidden states from a target Transformer layer on factual examples.
-2. Incrementally build a `TruthManifold` using an online mean and a regularized
-   inverse-scatter precision proxy.
+2. Incrementally build a `TruthManifold` using a Welford online mean and
+   covariance, exposed as a ridge-regularized, sample-count-normalized precision
+   matrix.
 3. Optionally collect false examples to build a contrastive direction.
 4. Register a PyTorch `forward_hook` on the selected layer.
 5. During generation, compute:
@@ -42,13 +43,17 @@ These diagnostics are useful for experiments, ablations, and qualitative demos.
 
 ## Distance Calibration
 
-The current `cov_inv` field is a Sherman-Morrison online precision proxy over
-warmup-state deviations. It is designed for fast monitoring and relative
-threshold sweeps, not as an exact inverse of the empirical sample covariance.
+The `cov_inv` field is the inverse of a ridge-regularized sample covariance,
+accumulated online with a numerically stable Welford update and normalized by
+the warmup sample count. A fixed relative ridge keeps it well-conditioned even
+when the warmup set is smaller than the hidden dimension. Because the covariance
+is normalized by sample count, the Mahalanobis-distance scale is stable across
+warmup-set sizes and does not collapse toward zero as more warmup samples are
+added.
 
-Treat Mahalanobis thresholds as experiment-specific hyperparameters. Calibrate
-them per model, target layer, warmup set, and generation setup before comparing
-results.
+Mahalanobis thresholds are still model-, layer-, and dataset-dependent. Treat
+them as experiment-specific hyperparameters and calibrate per model, target
+layer, warmup set, and generation setup before comparing results.
 
 ## What EigenTruth Does Not Prove
 
