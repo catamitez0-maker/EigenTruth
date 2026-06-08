@@ -108,7 +108,7 @@ generation hidden states -------------+
 The high-level workflow is:
 
 1. **Warm up**: collect final-token hidden states from factual texts and optionally false texts.
-2. **Build diagnostics**: incrementally construct a regularized precision proxy and an optional contrastive direction.
+2. **Build diagnostics**: incrementally construct a ridge-regularized precision matrix and an optional contrastive direction.
 3. **Attach a hook**: register a `forward_hook` on a selected Transformer layer.
 4. **Monitor**: calculate representation-distance and HSE diagnostics during generation.
 5. **Experiment with steering**: optionally inject a normalized steering vector after a configured threshold is exceeded.
@@ -116,7 +116,7 @@ The high-level workflow is:
 工作流程：
 
 1. **Warmup**：从事实文本和可选的错误文本中收集最后一个 token 的隐藏状态。
-2. **构建诊断**：增量构建正则化 precision proxy 和可选的对比方向。
+2. **构建诊断**：增量构建 ridge 正则化的精度矩阵和可选的对比方向。
 3. **挂载 Hook**：在选定的 Transformer 层注册 `forward_hook`。
 4. **监测**：在生成期间计算表征距离和 HSE 诊断指标。
 5. **实验性引导**：可选地在超过配置阈值后注入归一化引导向量。
@@ -127,7 +127,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the mathematical framing, c
 
 | Component | Purpose |
 |---|---|
-| `TruthManifold` | Maintains an online mean and a regularized precision proxy using Sherman-Morrison updates. |
+| `TruthManifold` | Maintains a Welford online mean and covariance, exposed as a ridge-regularized, sample-count-normalized precision matrix. |
 | `mahalanobis_distance` | Measures relative deviation from the warmup manifold. |
 | `poincare_map` | Projects representations into a bounded hyperbolic space. |
 | `hyperbolic_semantic_entropy` | Measures dispersion over a sliding window of projected states. |
@@ -138,7 +138,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the mathematical framing, c
 
 | 组件 | 用途 |
 |---|---|
-| `TruthManifold` | 维护在线均值和 Sherman-Morrison 正则化 precision proxy。 |
+| `TruthManifold` | 用 Welford 维护在线均值与协方差，对外暴露为按样本数归一化、ridge 正则化的精度矩阵。 |
 | `mahalanobis_distance` | 测量相对于 warmup 流形的相对偏移。 |
 | `poincare_map` | 将表征投影到有界双曲空间。 |
 | `hyperbolic_semantic_entropy` | 测量投影状态滑动窗口内的离散程度。 |

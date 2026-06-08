@@ -1,10 +1,11 @@
 """EigenTruth Core — 防崩溃数学引擎 / Crash-proof Math Engine.
 
 基于几何动力学的底层数学原语，包括 / Core mathematical primitives based on geometric dynamics, including:
-- Sherman-Morrison 在线 precision proxy 更新 / Online precision-proxy update via Sherman-Morrison
+- Welford 在线均值/协方差 + 固定 ridge 正则化精度矩阵 / Welford online mean/covariance with fixed-ridge precision
 - 马氏距离计算 / Mahalanobis distance computation
 - 庞加莱球模型映射 / Poincaré ball model mapping
 - 双曲语义熵 (HSE) / Hyperbolic Semantic Entropy (HSE)
+- Sherman-Morrison 秩-1 更新（独立工具函数）/ Sherman-Morrison rank-1 update (standalone utility)
 
 所有浮点密集运算在内部强制使用 FP32 以确保数值稳定性。
 All float-intensive computations are forced to FP32 internally to ensure numerical stability.
@@ -28,44 +29,95 @@ class TruthManifold:
     """真值流形：存储事实语料的统计特征。
     Truth Manifold: Stores statistical features of the factual corpus.
 
-    `cov_inv` 是用于快速马氏距离监测的正则化在线 precision proxy，
-    不是严格的样本协方差矩阵逆。
-    `cov_inv` is a regularized online precision proxy for fast Mahalanobis
-    monitoring, not an exact inverse of the empirical sample covariance.
+    流形用数值稳定的 Welford 累积维护在线均值与协方差散布矩阵 (`_M2`)。
+    `cov_inv` 是一个派生量：对**按样本数归一化**的样本协方差施加固定相对
+    ridge 正则后求逆得到的精度矩阵。由于按样本数归一化，马氏距离的尺度
+    在不同 warmup 样本数下保持稳定（不会随样本增多而塌缩到 0）。
+    The manifold maintains an online mean and covariance scatter matrix (`_M2`)
+    with a numerically stable Welford accumulation. `cov_inv` is a derived
+    quantity: the precision matrix obtained by ridge-regularizing the
+    **sample-count-normalized** sample covariance and inverting it. Because the
+    covariance is normalized by sample count, the Mahalanobis-distance scale is
+    stable across warmup-set sizes (it does not collapse toward 0 as more
+    warmup samples are added).
 
     Attributes:
         mean: 隐状态质心向量 / Hidden state centroid vector, shape [hidden_dim].
-        cov_inv: 协方差矩阵的逆 / Inverse covariance matrix, shape [hidden_dim, hidden_dim].
         n: 已累积的样本数量 / Accumulated sample count.
-        hidden_dim: 隐状态维度 (由首次更新时自动推断) / Hidden state dimension (inferred automatically on first update).
+        hidden_dim: 隐状态维度 (由首次更新时自动推断) / Hidden state dimension (inferred on first update).
+        ridge_lambda: 固定相对 ridge 系数（相对于平均方差），保证 n < hidden_dim
+            时精度矩阵仍可逆且尺度稳定 / Fixed relative ridge coefficient (relative to the
+            average variance); keeps the precision well-conditioned and scale-stable even when
+            n < hidden_dim.
     """
 
     mean: Optional[Tensor] = None
-    cov_inv: Optional[Tensor] = None
     n: int = 0
     hidden_dim: int = 0
+    ridge_lambda: float = 0.1
 
     # 扩展：支持方案 B (对比流形)
     false_mean: Optional[Tensor] = None
     contrastive_direction: Optional[Tensor] = None
 
+    # 协方差散布矩阵 (Welford M2 = Σ (xᵢ-μ)(xᵢ-μ)ᵀ)，以及派生精度矩阵缓存
+    # Covariance scatter matrix (Welford M2) and the cached derived precision matrix
+    _M2: Optional[Tensor] = field(default=None, repr=False)
+    _cov_inv_cache: Optional[Tensor] = field(default=None, repr=False)
+    _dirty: bool = field(default=True, repr=False)
+
     # 运行时设备跟踪（不参与序列化）
     _device: torch.device = field(default_factory=lambda: torch.device("cpu"), repr=False)
+
+    # ------------------------------------------------------------------
+    # 派生量：归一化、正则化的精度矩阵
+    # ------------------------------------------------------------------
+
+    @property
+    def cov_inv(self) -> Optional[Tensor]:
+        """归一化、ridge 正则化的精度矩阵 (协方差逆)，惰性计算并缓存。
+        Sample-count-normalized, ridge-regularized precision matrix (inverse
+        covariance), computed lazily and cached.
+
+        - n == 0 (无样本): 返回 None / no samples: returns None.
+        - n == 1: 返回单位阵作为先验精度 / returns identity as a prior precision.
+        - n >= 2: 返回 (Ĉ + λ·τ·I)⁻¹，其中 Ĉ = M2/(n-1)，τ 为平均方差。
+            returns (Ĉ + λ·τ·I)⁻¹ where Ĉ = M2/(n-1) and τ is the average variance.
+        """
+        if self.mean is None:
+            return None
+        if self.n < 2 or self._M2 is None:
+            return torch.eye(self.hidden_dim, device=self._device, dtype=torch.float32)
+        if self._dirty or self._cov_inv_cache is None:
+            self._cov_inv_cache = self._compute_precision()
+            self._dirty = False
+        return self._cov_inv_cache
+
+    def _compute_precision(self) -> Tensor:
+        """由散布矩阵计算归一化、ridge 正则化的精度矩阵 (强制 FP32)。"""
+        eye = torch.eye(self.hidden_dim, device=self._device, dtype=torch.float32)
+        cov = (self._M2.to(torch.float32) / (self.n - 1))
+        cov = 0.5 * (cov + cov.T)  # 对称化，消除浮点误差
+        # τ = 平均对角方差，作为 ridge 的尺度，使 λ 成为无量纲的相对强度
+        # τ = average diagonal variance; makes the ridge λ a dimensionless relative strength
+        tau = cov.diagonal().mean().clamp(min=1e-6)
+        reg = cov + (self.ridge_lambda * tau) * eye
+        return torch.linalg.inv(reg)
 
     # ------------------------------------------------------------------
     # 公开方法
     # ------------------------------------------------------------------
 
-    def update(self, h: Tensor, epsilon: float = 1e-6) -> None:
-        """用单个隐状态向量增量更新流形。
-        Incrementally update the manifold with a single hidden state vector.
+    def update(self, h: Tensor) -> None:
+        """用单个隐状态向量增量更新流形 (Welford 在线均值/协方差)。
+        Incrementally update the manifold with a single hidden state vector
+        (Welford online mean/covariance).
 
-        首次调用时自动初始化 mean 和 cov_inv。
-        Automatically initializes mean and cov_inv on first call.
+        首次调用时自动初始化 mean 和散布矩阵。
+        Automatically initializes the mean and scatter matrix on first call.
 
         Args:
             h: 隐状态向量 / Hidden state vector, shape [hidden_dim].
-            epsilon: Sherman-Morrison 分母正则项 / Denominator regularization term.
         """
         h = h.detach()
         if h.ndim != 1:
@@ -78,10 +130,11 @@ class TruthManifold:
             self.hidden_dim = h.shape[-1]
             self._device = h.device
             self.mean = h.clone().to(torch.float32)
-            self.cov_inv = torch.eye(
-                self.hidden_dim, device=self._device, dtype=torch.float32
+            self._M2 = torch.zeros(
+                self.hidden_dim, self.hidden_dim, device=self._device, dtype=torch.float32
             )
             self.n = 1
+            self._dirty = True
             return
 
         if h.shape[-1] != self.hidden_dim:
@@ -89,21 +142,25 @@ class TruthManifold:
                 f"Hidden dimension mismatch: expected {self.hidden_dim}, got {h.shape[-1]}."
             )
 
+        # Welford 协方差更新：M2 累加 (x-μ_old)(x-μ_new)ᵀ
+        # Welford covariance update: M2 accumulates (x-μ_old)(x-μ_new)ᵀ
         self.n += 1
-        # 增量协方差逆更新（必须在均值更新前计算 delta）
-        # Compute delta BEFORE updating the mean (critical for correct covariance estimation)
-        old_mean = self.mean.clone()
-        self.mean = self.mean + (h.to(torch.float32) - self.mean) / self.n
-        delta = h.to(torch.float32) - old_mean
-        self.cov_inv = sherman_morrison_update(self.cov_inv, delta, epsilon)
+        x = h.to(torch.float32)
+        delta = x - self.mean
+        self.mean = self.mean + delta / self.n
+        delta2 = x - self.mean
+        self._M2 = self._M2 + torch.outer(delta, delta2)
+        self._dirty = True
 
     def to(self, device: Union[str, torch.device]) -> "TruthManifold":
         """Move manifold tensors to a device in-place and return self."""
         device = torch.device(device)
         if self.mean is not None:
             self.mean = self.mean.to(device)
-        if self.cov_inv is not None:
-            self.cov_inv = self.cov_inv.to(device)
+        if self._M2 is not None:
+            self._M2 = self._M2.to(device)
+        if self._cov_inv_cache is not None:
+            self._cov_inv_cache = self._cov_inv_cache.to(device)
         if self.false_mean is not None:
             self.false_mean = self.false_mean.to(device)
         if self.contrastive_direction is not None:
@@ -113,7 +170,7 @@ class TruthManifold:
 
     def is_ready(self) -> bool:
         """流形至少经过 2 个样本后方可使用。"""
-        return self.n >= 2 and self.mean is not None and self.cov_inv is not None
+        return self.n >= 2 and self.mean is not None and self._M2 is not None
 
     def save(self, path: Union[str, Path]) -> None:
         """将流形序列化到磁盘。
@@ -122,10 +179,12 @@ class TruthManifold:
             path: 保存路径 (建议后缀 .pt 或 .bin).
         """
         state = {
+            "format": 2,
             "mean": self.mean,
-            "cov_inv": self.cov_inv,
+            "_M2": self._M2,
             "n": self.n,
             "hidden_dim": self.hidden_dim,
+            "ridge_lambda": self.ridge_lambda,
             "false_mean": self.false_mean,
             "contrastive_direction": self.contrastive_direction,
         }
@@ -144,11 +203,13 @@ class TruthManifold:
         state = torch.load(path, weights_only=True)
         manifold = cls()
         manifold.mean = state["mean"]
-        manifold.cov_inv = state["cov_inv"]
+        manifold._M2 = state.get("_M2", None)
         manifold.n = state["n"]
         manifold.hidden_dim = state["hidden_dim"]
+        manifold.ridge_lambda = state.get("ridge_lambda", 0.1)
         manifold.false_mean = state.get("false_mean", None)
         manifold.contrastive_direction = state.get("contrastive_direction", None)
+        manifold._dirty = True
         if manifold.mean is not None:
             manifold._device = manifold.mean.device
         return manifold

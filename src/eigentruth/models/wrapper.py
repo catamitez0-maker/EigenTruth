@@ -50,10 +50,12 @@ class EigenTruthWrapper(nn.Module):
         model: HuggingFace CausalLM 模型实例 / Model instance.
         target_layer_idx: 挂载探针的 Transformer 层索引
             Transformer layer index (supports negative indexing).
-        steering_lambda: 激活引导强度 (0 = 纯监测)
-            Activation steering strength (0 = monitor only).
-        mahalanobis_threshold: 马氏距离阈值
-            Triggers steering and warnings when exceeded.
+        steering_lambda: 激活引导强度，表示"相对激活范数的移动比例" (0 = 纯监测)。
+            Activation steering strength as a fraction of the hidden-state norm (0 = monitor only).
+        mahalanobis_threshold: 马氏距离阈值，超出时触发引导与预警。
+            距离尺度已按样本数归一化，阈值在不同 warmup 样本数下保持稳定。
+            Mahalanobis distance threshold; triggers steering and warnings when exceeded.
+            The distance scale is sample-count-normalized and stable across warmup-set sizes.
         hse_warning_threshold: HSE 预警阈值 / HSE warning threshold.
         curvature: 庞加莱球曲率 / Poincaré ball curvature.
         hse_window_size: HSE 滑动窗口大小 / HSE sliding window size.

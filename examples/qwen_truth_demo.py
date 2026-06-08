@@ -31,10 +31,14 @@ def main():
 
     # 选取模型倒数第8层进行干预（0.5B 模型有 24 层）
     # Select the -8th layer for intervention (0.5B model has 24 layers)
+    # steering_lambda 为"相对激活范数的移动比例"：0.1 ≈ 沿引导方向移动激活范数的 10%。
+    # mahalanobis_threshold 的尺度已按样本数归一化，但仍需按模型/层校准。
+    # steering_lambda is a fraction of the activation norm (0.1 ≈ 10% of the norm).
+    # The threshold scale is sample-count-normalized but still needs per-model/layer calibration.
     safe_model = EigenTruthWrapper(
         model=model,
         target_layer_idx=-8,
-        steering_lambda=0.5,
+        steering_lambda=0.1,
         mahalanobis_threshold=5.0,
     )
 

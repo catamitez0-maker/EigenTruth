@@ -42,10 +42,14 @@ class TruthProbe:
 
     Attributes:
         manifold: 真值流形（由 warmup 阶段构建） / Truth manifold (built during warmup).
-        steering_lambda: 引导向量注入强度 (0 = 不干预)
-            Steering vector injection strength (0 = no intervention).
-        threshold: 马氏距离阈值，超出时触发引导干预
-            Mahalanobis distance threshold; triggers steering.
+        steering_lambda: 引导强度，表示"相对激活范数的移动比例" (0 = 不干预)。
+            例如 0.1 表示把激活沿引导方向移动其自身范数的 ~10%。
+            Steering strength as a fraction of the hidden-state norm (0 = no intervention).
+            E.g. 0.1 moves the activation by ~10% of its own norm along the steering direction.
+        threshold: 马氏距离阈值，超出时触发引导干预。距离尺度已按样本数归一化，
+            阈值在不同 warmup 样本数下保持稳定。
+            Mahalanobis distance threshold; triggers steering. The distance scale is
+            sample-count-normalized, so thresholds are stable across warmup-set sizes.
         last_distance: 最近一次 hook 触发时的马氏距离
             Mahalanobis distance from the last triggered hook.
         last_hse: 最近一次计算的双曲语义熵 / The most recently computed Hyperbolic Semantic Entropy.
@@ -184,13 +188,18 @@ class TruthProbe:
                 )  # [B]
                 self.last_hse = hse_batch.max().item()
 
-            # 引导干预
+            # 引导干预 / Steering intervention
             mask = dist > self.threshold # [B]
             if mask.any() and self.steering_lambda > 0:
-                steering = self._compute_steering_vector(h_vec)  # [B, D]
-                # 注入：只修改最后一个 token 的激活
-                correction = self.steering_lambda * steering  # [B, D]
-                # 将无需干预的批次修正量清零
+                steering = self._compute_steering_vector(h_vec)  # 单位向量 [B, D]
+                # 按各样本激活范数缩放：steering_lambda 表示"相对激活范数的移动比例"，
+                # 与模型/层无关。单位向量直接乘 λ 会因激活范数(常为数十~数百)而几乎无效。
+                # Scale by each row's activation norm so steering_lambda is a fraction of the
+                # hidden-state magnitude (model/layer-portable). A bare unit vector × λ is
+                # negligible because activation norms are often tens to hundreds.
+                h_norm = torch.norm(h_vec, dim=-1, keepdim=True)  # [B, 1]
+                correction = (self.steering_lambda * h_norm) * steering  # [B, D]
+                # 将无需干预的批次修正量清零 / Zero out rows below threshold
                 correction = correction * mask.unsqueeze(1).to(correction.dtype)
 
                 hidden = hidden.clone()  # 避免原地修改影响计算图
