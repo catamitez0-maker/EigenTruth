@@ -1,0 +1,18 @@
+{
+  "config": {
+    "model": "gpt2",
+    "layer": -8,
+    "offline": false,
+    "manifold_n": 266,
+    "hidden_dim": 768,
+    "n_pos": 592,
+    "n_neg": 483,
+    "seed": 0
+  },
+  "auroc": {
+    "maha_last": 0.6223455598455598,
+    "disp_euclid": 0.48350330143808407,
+    "disp_hse": 0.47431593083767,
+    "nll_answer": 0.41088215544737283
+  }
+}
