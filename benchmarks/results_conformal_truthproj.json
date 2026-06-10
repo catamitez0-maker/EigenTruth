@@ -1,0 +1,31 @@
+{
+  "config": {
+    "scores": "benchmarks/scores_gpt2_l-8.json",
+    "signal": "truth_proj",
+    "repeats": 20,
+    "seed": 0,
+    "n_true": 483,
+    "n_false": 592
+  },
+  "results": {
+    "0.05": {
+      "false_alarm": 0.05516528925619835,
+      "coverage": 0.9448347107438017,
+      "detection": 0.1440033783783784,
+      "pass": true
+    },
+    "0.1": {
+      "false_alarm": 0.09648760330578512,
+      "coverage": 0.9035123966942149,
+      "detection": 0.2652027027027027,
+      "pass": true
+    },
+    "0.2": {
+      "false_alarm": 0.19483471074380163,
+      "coverage": 0.8051652892561983,
+      "detection": 0.4687500000000001,
+      "pass": true
+    }
+  },
+  "verdict": "ACCEPT"
+}

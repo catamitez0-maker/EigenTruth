@@ -9,6 +9,12 @@ benchmark runners live in `benchmarks/` at the repository root.
 
 from __future__ import annotations
 
+from eigentruth.eval.conformal import conformal_pvalues, conformal_threshold
 from eigentruth.eval.metrics import euclidean_dispersion, roc_auc
 
-__all__ = ["roc_auc", "euclidean_dispersion"]
+__all__ = [
+    "roc_auc",
+    "euclidean_dispersion",
+    "conformal_pvalues",
+    "conformal_threshold",
+]
