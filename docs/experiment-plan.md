@@ -1,0 +1,135 @@
+# EigenTruth Experiment Plan
+
+A gated experiment program: each borrowed idea (math, physics, frontier-problem) gets one
+small experiment with an explicit accept/reject criterion. Ideas that pass become tool
+features; ideas that fail are documented as negative results. The goal is a complete
+representation-observability toolkit spanning **training and inference**.
+
+逐个分析、逐个实验、按判据决定进库或砍掉。负结果同样写入文档——这是工具的诚信资产。
+
+## Ground rules
+
+- Every experiment must run on **CPU, 8 GB RAM** (gpt2 / tiny models). Anything needing a
+  bigger model is run as a mechanism check here and flagged "replicate on larger hardware".
+- One experiment → one focused PR. Tests + lint green before merge.
+- Each experiment states: **Question / Method / Accept criterion / Deliverable / Cost.**
+- Priority order = information value ÷ cost. Phase 1 experiments are independent and can
+  be reordered freely.
+
+## Phase 0 — Finish in-flight work
+
+### E0. Linear direction vs Mahalanobis + layer sweep (real data)
+- **Question:** Is the contrastive-direction projection (`truth_proj`, mass-mean probe)
+  a stronger detector than `maha_last`? Which layer is best?
+- **Method:** Code already in working tree (`benchmarks/eval_truthfulqa.py --sweep`).
+  Run on gpt2, full TruthfulQA split as before.
+- **Accept:** n/a (measurement, not a gate). Whatever wins becomes the documented default.
+- **Deliverable:** Updated `benchmarks/README.md` results + default-signal/layer guidance;
+  commit to the open eval-harness PR.
+- **Cost:** ~5 min CPU. **Status: code ready, needs the run.**
+
+## Phase 1 — Validate each math borrowing (independent, reorderable)
+
+### E1. Conformal prediction → calibrated thresholds
+- **Question:** Can split conformal turn raw scores (maha / truth_proj) into p-values with
+  honest finite-sample coverage, replacing hand-picked thresholds?
+- **Method:** Implement split-conformal calibration over a held-out calibration set; on the
+  TruthfulQA eval split check empirical coverage at nominal 80/90/95%.
+- **Accept:** |empirical − nominal| coverage ≤ 3% across the three levels.
+- **Deliverable:** `eigentruth.eval.conformal` (or `Manifold.calibrate()`) + tests.
+- **Cost:** low (pure CPU, ~50 lines + tests). **Highest value/cost in the plan.**
+
+### E2. Random matrix theory → principled spectrum tools
+- **Question:** Does the Marchenko–Pastur noise floor + eigenvalue shrinkage (Ledoit–Wolf
+  style) beat our fixed relative ridge, and give a principled effective-rank signal?
+- **Method:** (a) Plot manifold covariance spectrum vs MP bulk for gpt2 activations; count
+  out-of-bulk spikes. (b) Swap fixed ridge for Ledoit–Wolf shrinkage; re-run E0 AUROC.
+  (c) Synthetic collapse data: check spike-count/effective-rank monotonicity.
+- **Accept:** AUROC not worse AND scale stability preserved; rank signal monotone under
+  synthetic collapse.
+- **Deliverable:** `Manifold.spectrum()` (eigvals, MP edges, n_spikes, eff_rank) +
+  optional shrinkage mode.
+- **Cost:** low-medium.
+
+### E3. Bures–Wasserstein distance → manifold-to-manifold metric
+- **Question:** Is closed-form 2-Wasserstein between Gaussians the right metric for
+  comparing manifolds (checkpoint diff, drift)?
+- **Method:** Implement BW distance; unit-test metric properties on synthetic Gaussians;
+  sanity-check on gpt2: distance matrix across layers should show adjacent-layer locality.
+- **Accept:** metric axioms pass; layer-distance structure is coherent (adjacent < distant).
+- **Deliverable:** `manifold_distance()` in core + tests. Foundation for E5/E8.
+- **Cost:** low.
+
+### E4. Intrinsic dimension → cheap layer-selection signal
+- **Question:** Does the TwoNN intrinsic-dimension profile across layers reproduce the
+  literature shape, and does it predict the best monitoring layer found in E0?
+- **Method:** Implement TwoNN; compute ID per layer on gpt2 activations; compare ID
+  profile against E0's per-layer AUROC; also score ID as a 6th detector signal.
+- **Accept:** ID profile qualitatively matches literature (rise→fall) AND (ID-selected
+  layer is within top-3 of E0 sweep OR ID signal AUROC > 0.55).
+- **Deliverable:** `eigentruth.eval.intrinsic_dimension` + layer-selection heuristic doc.
+- **Cost:** low-medium.
+
+## Phase 2 — Tool-composition experiments (combine validated bricks)
+
+### E5. Training telemetry callback (training-side axis)
+- **Question:** Can streaming per-layer stats (norm, mean drift, eff-rank from E2, BW
+  distance-to-init from E3) visibly distinguish a healthy fine-tune from a pathological one?
+- **Method:** `RepTelemetryCallback` for HF Trainer; fine-tune a tiny model twice on CPU —
+  clean data vs corrupted (heavy label noise / duplicated data); compare telemetry curves.
+- **Accept:** at least one telemetry curve cleanly separates the two runs before eval loss does.
+- **Deliverable:** `eigentruth.training` module + demo notebook/script + tests.
+- **Cost:** medium. Depends on: E2 (rank), E3 (distance) preferred but not required.
+
+### E6. Model-collapse early warning (synthetic-data loop)
+- **Question:** Does representation diversity (eff-rank / ID) decay monotonically when a
+  model is iteratively trained on its own outputs, and earlier than visible quality loss?
+- **Method:** tiny model; 3–5 generations of self-output fine-tuning; track E2/E4 signals.
+- **Accept:** diversity signal decays monotonically across generations.
+- **Deliverable:** collapse-detection demo + doc section. (Frontier problem: synthetic data.)
+- **Cost:** medium. Depends on: E2 or E4.
+
+### E7. Generation-trajectory convergence monitor (reasoning-direction seed)
+- **Question:** During generation, does hidden-state trajectory convergence (step-to-step
+  displacement decay; optional Koopman-style rate estimate) correlate with output
+  confidence/quality?
+- **Method:** gpt2, per-token last/mid-layer states over generations; correlate convergence
+  metrics with answer NLL/entropy and TruthfulQA labels.
+- **Accept:** |Spearman| > 0.3 with confidence, or AUROC > 0.55 as a detector signal.
+- **Deliverable:** `TrajectoryMonitor` prototype. Flag: replicate on a reasoning model
+  (R1-distill class) on larger hardware.
+- **Cost:** medium.
+
+### E8. Concept registry + multi-probe (platform glue)
+- **Question:** engineering, not science — can multiple (manifold, direction) pairs be
+  saved/versioned/loaded and monitored simultaneously with a clean API?
+- **Method:** registry format (.pt + metadata), multi-probe attach, docs.
+- **Accept:** API review + tests; example with two concepts monitored at once.
+- **Deliverable:** `eigentruth.registry`. Foundation for BYO-concept use.
+- **Cost:** medium. Independent.
+
+## Phase 3 — Consolidation and release
+
+### E9. Prune and rename
+- Act on accumulated evidence: demote/remove hyperbolic HSE from the default path
+  (current evidence: no lift over Euclidean); generalize naming
+  (`Manifold`/`Direction`/`Probe`, keep `Truth*` aliases); reposition README as a
+  representation-observability toolkit for training + inference.
+
+### E10. Release 0.2.0 + honest writeup
+- Package, publish, and write up every experiment **including negative results**.
+
+## Decision log
+
+| Exp | Date | Verdict | Evidence |
+|-----|------|---------|----------|
+| (hyperbolic HSE vs Euclidean) | 2026-06-08 | no lift (0.474 vs 0.484, gpt2 L-8) | `benchmarks/results_gpt2_l-8.json` |
+| E0 | 2026-06-10 | **truth_proj wins**: 0.723 @L-8, peak 0.753 @L-6, beats maha (0.622/0.638) at every layer except -12; both collapse at L-1. Default guidance: contrastive direction, mid-late layers (-8…-4); maha as no-false-data fallback. | `benchmarks/results_gpt2_sweep.json` |
+| E1 | | pending | |
+| E2 | | pending | |
+| E3 | | pending | |
+| E4 | | pending | |
+| E5 | | pending | |
+| E6 | | pending | |
+| E7 | | pending | |
+| E8 | | pending | |
