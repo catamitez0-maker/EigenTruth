@@ -64,31 +64,44 @@ the record.
 
 ### First results (indicative — `gpt2`, a weak base model)
 
-A first end-to-end run on real TruthfulQA, committed as `results_gpt2_l-8.json`:
+End-to-end runs on real TruthfulQA, committed as `results_gpt2_l-8.json` (first run) and
+`results_gpt2_sweep.json` (E0: adds `truth_proj` + full layer sweep). Setup: `gpt2` (124M
+base model), manifold from 266 true / direction from 338 false statements (80 held-out
+questions), 1075 eval statements (592 false / 483 true), seed 0.
+
+At the default layer −8:
 
 | signal | AUROC |
 |---|---|
-| `maha_last` | **0.622** |
+| `truth_proj` | **0.723** |
+| `maha_last` | 0.622 |
 | `disp_euclid` | 0.484 |
 | `disp_hse` | 0.474 |
 | `nll_answer` | 0.411 |
 
-Setup: `gpt2` (124M base model), layer −8, manifold from 266 true statements (80 held-out
-questions), 1075 eval statements (592 false / 483 true), seed 0.
+Layer sweep (free: one forward pass returns all hidden states) — `truth_proj` AUROC by
+layer: peaks at **0.753 (layer −6)**, stays above 0.72 across the −8…−2 band, and collapses
+at the last layer (0.546). `maha_last` peaks at 0.638 (layer −4) and also collapses at −1.
 
-Two takeaways, both consistent with the project's stated caveats:
+Takeaways, all consistent with the project's stated caveats:
 
-1. **The manifold distance carries real signal.** `maha_last` (0.62) is well above chance
-   and clearly beats the perplexity baseline (`nll_answer` = 0.41 — anti-correlated here,
-   because a base LM finds common misconceptions *more* fluent, not less).
-2. **The hyperbolic projection does not earn its keep here.** `disp_hse` (0.474) is
-   marginally *below* its Euclidean counterpart `disp_euclid` (0.484), and both sit at
-   chance. On this setup the hyperbolic machinery adds nothing over Euclidean dispersion.
+1. **The linear contrastive direction is the strongest signal.** `truth_proj` — the tool's
+   own `contrastive_direction` used as a mass-mean probe — beats Mahalanobis distance at
+   every layer except the earliest, consistent with the linear-truth-geometry literature
+   (Marks & Tegmark). Practical default: monitor the contrastive direction at a mid-late
+   layer (−8…−4); use `maha_last` when no false examples are available.
+2. **The manifold distance carries real signal** (0.62–0.64) and clearly beats the
+   perplexity baseline (`nll_answer` = 0.41 — anti-correlated, because a base LM finds
+   common misconceptions *more* fluent, not less).
+3. **The hyperbolic projection does not earn its keep here.** `disp_hse` (0.474) sits
+   marginally *below* its Euclidean counterpart (0.484); both are at chance.
+4. **Do not monitor the last layer.** Both geometric signals collapse at −1; the signal
+   lives in the middle-to-late stack.
 
 This is committed for reproducibility, not as a strong claim. `gpt2` is a weak 2019 base
 model and within-statement dispersion is a cheap proxy for sample-based semantic entropy.
 Re-run on an instruction-tuned model (e.g. `Qwen2.5-0.5B-Instruct`, which needs more RAM
-than an 8 GB machine comfortably provides) and sweep layers before drawing conclusions.
+than an 8 GB machine comfortably provides) before drawing conclusions.
 
 ### Limitations (read before quoting any number)
 

@@ -8,6 +8,11 @@ EigenTruth benchmark — can hidden-state geometry separate true vs. false state
     2. 双曲离散度 (disp_hse) 是否优于欧氏离散度 (disp_euclid)？ —— 即"双曲几何有没有用"的消融。
        Does hyperbolic dispersion (disp_hse) beat Euclidean dispersion (disp_euclid)? — the
        "does the hyperbolic projection earn its keep?" ablation.
+    3. 对比方向投影 (truth_proj，即工具自带的 contrastive_direction 用作 mass-mean 探针，
+       参见 Marks & Tegmark) 是否是更强的检测器？最佳目标层在哪 (--sweep)？
+       Is the contrastive-direction projection (the tool's own steering direction used as a
+       mass-mean probe, cf. Marks & Tegmark) an even stronger detector, and which layer is
+       best (--sweep)?
 
 方法 / Method (SAPLMA 式、确定性、无需 LLM 裁判 / SAPLMA-style, deterministic, judge-free):
     - 从**留出**题目的*正确*答案构建真值流形（无标签泄漏）。
@@ -52,7 +57,7 @@ from eigentruth.core.math_engine import (
 )
 from eigentruth.eval.metrics import euclidean_dispersion, roc_auc
 
-SIGNALS = ["maha_last", "disp_euclid", "disp_hse", "nll_answer"]
+SIGNALS = ["maha_last", "truth_proj", "disp_euclid", "disp_hse", "nll_answer"]
 
 
 @dataclass
@@ -92,21 +97,27 @@ _FALSE_SMOKE = [
 ]
 
 
-def load_offline() -> tuple[List[str], List[Statement]]:
-    """返回 (流形构建用真陈述, 评测陈述)。"""
-    manifold_texts = _TRUE_SMOKE[:6]
+def load_offline() -> tuple[List[str], List[str], List[Statement]]:
+    """返回 (流形构建用真陈述, 对比方向用假陈述, 评测陈述)。"""
+    manifold_true = _TRUE_SMOKE[:6]
+    manifold_false = _FALSE_SMOKE[:6]
     eval_stmts: List[Statement] = []
     for t in _TRUE_SMOKE[6:]:
         eval_stmts.append(Statement("", t, 0))
     for f in _FALSE_SMOKE[6:]:
         eval_stmts.append(Statement("", f, 1))
-    return manifold_texts, eval_stmts
+    return manifold_true, manifold_false, eval_stmts
 
 
 def load_truthfulqa(
     manifold_questions: int, limit: int
-) -> tuple[List[str], List[Statement]]:
-    """加载 TruthfulQA multiple_choice，切分为流形集 / 评测集（题目层面不重叠）。"""
+) -> tuple[List[str], List[str], List[Statement]]:
+    """加载 TruthfulQA multiple_choice，切分为流形集 / 评测集（题目层面不重叠）。
+
+    流形集题目的正确答案用于构建真值流形，错误答案仅用于 mass-mean 对比方向。
+    Correct answers of manifold-split questions build the truth manifold; their
+    incorrect answers are used only for the mass-mean contrastive direction.
+    """
     from datasets import load_dataset  # lazy
 
     # 新旧版 datasets 的数据集 id 不同，依次尝试 / dataset id differs across versions
@@ -124,23 +135,25 @@ def load_truthfulqa(
             f"Try `pip install -U datasets` or run with --offline for a pipeline check."
         )
 
-    manifold_texts: List[str] = []
+    manifold_true: List[str] = []
+    manifold_false: List[str] = []
     eval_stmts: List[Statement] = []
     for i, row in enumerate(ds):
         q = row["question"]
         targets = row["mc2_targets"]
         choices, labels = targets["choices"], targets["labels"]
         if i < manifold_questions:
-            # 仅用正确答案构建流形 / manifold from correct answers only
             for c, lab in zip(choices, labels):
                 if lab == 1:
-                    manifold_texts.append(f"{q} {c}")
+                    manifold_true.append(f"{q} {c}")
+                else:
+                    manifold_false.append(f"{q} {c}")
         else:
             for c, lab in zip(choices, labels):
                 eval_stmts.append(Statement(q, c, is_false=int(lab == 0)))
         if limit and (i - manifold_questions + 1) >= limit and i >= manifold_questions:
             break
-    return manifold_texts, eval_stmts
+    return manifold_true, manifold_false, eval_stmts
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +177,13 @@ def load_model(model_name: str, device: torch.device, dtype: str = "float32"):
 
 
 @torch.no_grad()
-def statement_reps(model, tokenizer, stmt: Statement, layer: int,
+def statement_reps(model, tokenizer, stmt: Statement, layers: List[int],
                    device: torch.device, max_length: int) -> Optional[dict]:
-    """单次前向，返回答案 token 的隐状态、末 token 隐状态、答案 NLL。"""
+    """单次前向：各目标层的末 token 隐状态、主层 (layers[0]) 答案 token 隐状态、答案 NLL。
+    Single forward pass: last-token hidden state per requested layer, answer-token hidden
+    states for the primary layer (layers[0]), and the answer NLL. output_hidden_states
+    returns every layer at once, so a layer sweep costs no extra forward passes.
+    """
     q_ids = tokenizer(stmt.question, add_special_tokens=True).input_ids if stmt.question \
         else tokenizer(tokenizer.bos_token or tokenizer.eos_token or " ").input_ids
     a_ids = tokenizer(" " + stmt.answer.strip(), add_special_tokens=False).input_ids
@@ -181,9 +198,10 @@ def statement_reps(model, tokenizer, stmt: Statement, layer: int,
     out = model(input_ids=input_ids, output_hidden_states=True)
 
     # hidden_states[-k] 对应 layers[-k] 的输出（负索引对齐，与 wrapper 约定一致）
-    hs = out.hidden_states[layer][0]  # [T, D]
-    ans_hs = hs[-n_ans:, :].float().cpu()
-    last_hs = hs[-1, :].float().cpu()
+    last_by_layer = {
+        layer: out.hidden_states[layer][0][-1, :].float().cpu() for layer in layers
+    }
+    ans_hs = out.hidden_states[layers[0]][0][-n_ans:, :].float().cpu()
 
     # 答案 token 的平均负对数似然（困惑度基线）
     logits = out.logits[0].float()  # [T, V]
@@ -193,17 +211,42 @@ def statement_reps(model, tokenizer, stmt: Statement, layer: int,
     ans_logp = tok_logp[-n_ans:] if n_ans <= tok_logp.shape[0] else tok_logp
     nll = float((-ans_logp.mean()).item())
 
-    return {"ans_hs": ans_hs, "last_hs": last_hs, "nll": nll}
+    return {"last": last_by_layer, "ans_hs": ans_hs, "nll": nll}
 
 
-def build_manifold(model, tokenizer, texts: List[str], layer: int,
-                   device: torch.device, max_length: int) -> TruthManifold:
-    manifold = TruthManifold()
-    for t in texts:
-        reps = statement_reps(model, tokenizer, Statement("", t, 0), layer, device, max_length)
-        if reps is not None:
-            manifold.update(reps["last_hs"])
-    return manifold
+def build_layer_stats(model, tokenizer, true_texts: List[str], false_texts: List[str],
+                      layers: List[int], device: torch.device, max_length: int) -> dict:
+    """逐层构建真值流形与 mass-mean 对比方向（与 EigenTruthWrapper.warmup 同构）。
+    Per-layer truth manifolds plus the mass-mean contrastive direction
+    (mirrors EigenTruthWrapper.warmup; cf. Marks & Tegmark mass-mean probing).
+    """
+    manifolds = {layer: TruthManifold() for layer in layers}
+    false_sums: dict = {layer: None for layer in layers}
+    n_false = 0
+
+    for t in true_texts:
+        reps = statement_reps(model, tokenizer, Statement("", t, 0), layers, device, max_length)
+        if reps is None:
+            continue
+        for layer in layers:
+            manifolds[layer].update(reps["last"][layer])
+
+    for t in false_texts:
+        reps = statement_reps(model, tokenizer, Statement("", t, 1), layers, device, max_length)
+        if reps is None:
+            continue
+        n_false += 1
+        for layer in layers:
+            h = reps["last"][layer]
+            false_sums[layer] = h if false_sums[layer] is None else false_sums[layer] + h
+
+    for layer in layers:
+        m = manifolds[layer]
+        if n_false > 0 and m.mean is not None:
+            m.false_mean = (false_sums[layer] / n_false).to(torch.float32)
+            raw = m.mean - m.false_mean
+            m.contrastive_direction = raw / torch.norm(raw).clamp(min=1e-8)
+    return manifolds
 
 
 # ---------------------------------------------------------------------------
@@ -221,36 +264,66 @@ def run(args) -> dict:
     torch.manual_seed(args.seed)
 
     if args.offline:
-        manifold_texts, eval_stmts = load_offline()
+        manifold_true, manifold_false, eval_stmts = load_offline()
         print("[!] OFFLINE SMOKE MODE - pipeline check only, NOT a benchmark.\n")
     else:
-        manifold_texts, eval_stmts = load_truthfulqa(args.manifold_questions, args.limit)
+        manifold_true, manifold_false, eval_stmts = load_truthfulqa(
+            args.manifold_questions, args.limit
+        )
 
     print(f"Loading {args.model} on {device} (dtype={args.dtype}) ...")
     model, tokenizer = load_model(args.model, device, args.dtype)
 
-    print(f"Building truth manifold from {len(manifold_texts)} true statements "
-          f"(layer={args.layer}) ...")
-    manifold = build_manifold(model, tokenizer, manifold_texts, args.layer, device, args.max_length)
-    if not manifold.is_ready():
+    # --sweep: 主层在前，其余层按 hidden_states 负索引补全（同一次前向全部免费拿到）
+    if args.sweep:
+        n_layers = int(model.config.num_hidden_layers)
+        layers = [args.layer] + [
+            -(i + 1) for i in range(n_layers) if -(i + 1) != args.layer
+        ]
+    else:
+        layers = [args.layer]
+
+    print(f"Building per-layer truth stats from {len(manifold_true)} true / "
+          f"{len(manifold_false)} false statements ({len(layers)} layer(s)) ...")
+    manifolds = build_layer_stats(
+        model, tokenizer, manifold_true, manifold_false, layers, device, args.max_length
+    )
+    primary = manifolds[args.layer]
+    if not primary.is_ready():
         print("[X] Manifold not ready (need >=2 statements). Aborting.")
         sys.exit(1)
-    print(f"   manifold: n={manifold.n}, hidden_dim={manifold.hidden_dim}\n")
+    print(f"   manifold: n={primary.n}, hidden_dim={primary.hidden_dim}, "
+          f"contrastive_direction={'yes' if primary.contrastive_direction is not None else 'no'}\n")
 
     scores: dict[str, List[float]] = {s: [] for s in SIGNALS}
+    sweep_scores: dict = {
+        layer: {"maha_last": [], "truth_proj": []} for layer in layers
+    }
     labels: List[int] = []
 
     print(f"Scoring {len(eval_stmts)} eval statements ...")
     for k, stmt in enumerate(eval_stmts):
-        reps = statement_reps(model, tokenizer, stmt, args.layer, device, args.max_length)
+        reps = statement_reps(model, tokenizer, stmt, layers, device, args.max_length)
         if reps is None:
             continue
-        last = reps["last_hs"]
-        ans = reps["ans_hs"]
 
-        scores["maha_last"].append(
-            float(mahalanobis_distance(last, manifold.mean.cpu(), manifold.cov_inv.cpu()).item())
-        )
+        for layer in layers:
+            m = manifolds[layer]
+            h = reps["last"][layer]
+            sweep_scores[layer]["maha_last"].append(
+                float(mahalanobis_distance(h, m.mean, m.cov_inv).item())
+            )
+            # 沿真值方向的投影越小越可疑：score = -(h · direction)
+            # Lower projection onto the truth direction = more suspect
+            if m.contrastive_direction is not None:
+                proj = -float(torch.dot(h, m.contrastive_direction).item())
+            else:
+                proj = 0.0
+            sweep_scores[layer]["truth_proj"].append(proj)
+
+        ans = reps["ans_hs"]
+        scores["maha_last"].append(sweep_scores[args.layer]["maha_last"][-1])
+        scores["truth_proj"].append(sweep_scores[args.layer]["truth_proj"][-1])
         scores["disp_euclid"].append(float(euclidean_dispersion(ans).item()))
         scores["disp_hse"].append(
             float(hyperbolic_semantic_entropy(poincare_map(ans)).item())
@@ -281,22 +354,46 @@ def run(args) -> dict:
         verdict = "hyperbolic HELPS" if delta > 0.01 else (
             "hyperbolic HURTS" if delta < -0.01 else "no meaningful difference")
         print(f"  disp_hse - disp_euclid = {delta:+.3f}  ->  {verdict}")
-    geo = max(results["maha_last"], results["disp_hse"], results["disp_euclid"])
+    geo = max(results["maha_last"], results["truth_proj"],
+              results["disp_hse"], results["disp_euclid"])
     if not (results["nll_answer"] != results["nll_answer"]):
         print(f"  best geometry ({geo:.3f}) vs nll baseline ({results['nll_answer']:.3f})  ->  "
               f"{'geometry wins' if geo > results['nll_answer'] + 0.01 else 'baseline competitive'}")
     print("=" * 56)
 
+    sweep_payload = None
+    if args.sweep:
+        sweep_payload = {}
+        print("\n  Layer sweep (AUROC):")
+        print(f"  {'layer':>6} {'maha_last':>11} {'truth_proj':>11}")
+        for layer in sorted(layers):
+            r_m = roc_auc(sweep_scores[layer]["maha_last"], labels)
+            r_p = roc_auc(sweep_scores[layer]["truth_proj"], labels)
+            sweep_payload[str(layer)] = {"maha_last": r_m, "truth_proj": r_p}
+            print(f"  {layer:>6} {r_m:>11.3f} {r_p:>11.3f}")
+
     payload = {
         "config": {"model": args.model, "layer": args.layer, "offline": args.offline,
-                   "manifold_n": manifold.n, "hidden_dim": manifold.hidden_dim,
+                   "manifold_n": primary.n, "n_manifold_false": len(manifold_false),
+                   "hidden_dim": primary.hidden_dim,
                    "n_pos": n_pos, "n_neg": n_neg, "seed": args.seed},
         "auroc": results,
+        "sweep": sweep_payload,
     }
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         print(f"\nWrote structured results to {args.json}")
+    if args.dump_scores:
+        # 逐陈述原始分数：供共形校准等后处理复用，无需再跑模型
+        # Raw per-statement scores: enables post-hoc analyses (e.g. conformal
+        # calibration) without re-running the model
+        dump = {"labels": labels, "scores": scores}
+        if args.sweep:
+            dump["sweep_scores"] = {str(layer): sweep_scores[layer] for layer in layers}
+        with open(args.dump_scores, "w", encoding="utf-8") as f:
+            json.dump(dump, f)
+        print(f"Dumped raw per-statement scores to {args.dump_scores}")
     print("\nJSON:", json.dumps(payload["auroc"]))
     return payload
 
@@ -307,6 +404,9 @@ def main():
     p.add_argument("--dtype", default="float32", choices=list(_DTYPES),
                    help="model weight dtype; bfloat16 halves memory on low-RAM machines")
     p.add_argument("--layer", type=int, default=-8, help="target layer index (negative ok)")
+    p.add_argument("--sweep", action="store_true",
+                   help="score maha/truth_proj at every layer (free: one forward pass already "
+                        "returns all hidden states)")
     p.add_argument("--limit", type=int, default=200, help="max eval questions (0 = all)")
     p.add_argument("--manifold-questions", type=int, default=80,
                    help="held-out questions whose correct answers build the manifold")
@@ -314,6 +414,9 @@ def main():
     p.add_argument("--offline", action="store_true",
                    help="use bundled smoke statements (pipeline check, not a benchmark)")
     p.add_argument("--json", default=None, help="optional path to write structured results")
+    p.add_argument("--dump-scores", default=None,
+                   help="optional path to dump raw per-statement scores+labels "
+                        "(enables post-hoc analyses, e.g. conformal calibration)")
     p.add_argument("--seed", type=int, default=0)
     run(p.parse_args())
 

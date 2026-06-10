@@ -39,6 +39,9 @@ logs/
 htmlcov/
 .tox/
 
+# Benchmark raw score dumps (large derived data;结果 JSON 提交，原始分数不提交)
+benchmarks/scores_*.json
+
 # Distribution
 *.tar.gz
 *.whl
