@@ -1,0 +1,31 @@
+{
+  "config": {
+    "scores": "benchmarks/scores_gpt2_l-8.json",
+    "signal": "maha_last",
+    "repeats": 20,
+    "seed": 0,
+    "n_true": 483,
+    "n_false": 592
+  },
+  "results": {
+    "0.05": {
+      "false_alarm": 0.05516528925619837,
+      "coverage": 0.9448347107438017,
+      "detection": 0.12896959459459462,
+      "pass": true
+    },
+    "0.1": {
+      "false_alarm": 0.10537190082644628,
+      "coverage": 0.8946280991735537,
+      "detection": 0.1947635135135135,
+      "pass": true
+    },
+    "0.2": {
+      "false_alarm": 0.21301652892561979,
+      "coverage": 0.7869834710743802,
+      "detection": 0.3408783783783784,
+      "pass": true
+    }
+  },
+  "verdict": "ACCEPT"
+}

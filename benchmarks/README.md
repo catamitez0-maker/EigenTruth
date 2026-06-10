@@ -116,6 +116,30 @@ than an 8 GB machine comfortably provides) before drawing conclusions.
   comparison against published detectors (semantic entropy, INSIDE/EigenScore, SAPLMA)
   on standard splits.
 
+## `eval_conformal.py` (E1)
+
+Validates that **split-conformal calibration** turns raw scores (Mahalanobis distance,
+contrastive-direction projection) into alarm thresholds with honest finite-sample
+coverage — replacing hand-picked thresholds like `mahalanobis_threshold=15.0`.
+
+It consumes the per-statement scores dumped by `eval_truthfulqa.py --dump-scores`
+(no model re-run needed). True statements form the exchangeable "normal" population,
+split 50/50 into calibration/test over 20 seeded repeats:
+
+```bash
+python benchmarks/eval_truthfulqa.py --model gpt2 --dump-scores benchmarks/scores.json ...
+python benchmarks/eval_conformal.py --scores benchmarks/scores.json --signal truth_proj
+```
+
+**E1 result (gpt2, layer −8):** empirical false-alarm rate tracks the nominal α within
+1.3% at α ∈ {0.05, 0.1, 0.2} for both signals — the guarantee holds in practice. At the
+same α = 0.2 false-alarm budget, `truth_proj` detects **46.9%** of false statements vs
+34.1% for `maha_last` (committed as `results_conformal_*.json`). The calibration API
+lives in `eigentruth.eval.conformal` (`conformal_pvalues`, `conformal_threshold`).
+
+Caveat: the guarantee is conditional on exchangeability — under distribution shift
+(different domain than the calibration set) coverage can degrade; recalibrate per domain.
+
 ## 说明
 
 `eval_truthfulqa.py` 在 TruthfulQA 上以确定性、无需 LLM 裁判、单次前向的方式，检验隐状态
